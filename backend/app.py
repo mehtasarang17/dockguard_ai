@@ -53,6 +53,12 @@ chat_llm = get_llm_client()
 # Routes that do NOT require API key authentication
 AUTH_EXEMPT_ROUTES = {
     'health',
+    'get_prompts',
+    'get_prompt_detail',
+    'list_frameworks',
+    'frameworks_status',
+    'upload_framework',
+    'delete_framework',
 }
 
 @app.before_request
@@ -603,6 +609,43 @@ def save_document(doc_id):
         })
     except Exception as e:
         print(f"Save to KB error: {e}")
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route('/api/documents/<int:doc_id>/reanalyze', methods=['POST'])
+def reanalyze_document(doc_id):
+    """Re-trigger analysis for a document using current LLM provider (Bedrock)."""
+    db = get_db()
+    try:
+        doc = db.query(Document).filter(Document.id == doc_id).first()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+        
+        # Delete existing analysis if any
+        db.query(Analysis).filter(Analysis.document_id == doc_id).delete()
+        
+        # Reset status to processing
+        doc.status = 'processing'
+        db.commit()
+        
+        # Start background processing with current LLM provider (Bedrock)
+        t = threading.Thread(
+            target=_process_document, 
+            args=(doc_id, doc.file_path, doc.document_type), 
+            daemon=True
+        )
+        t.start()
+        
+        return jsonify({
+            'message': 'Re-analysis started with Bedrock',
+            'document_id': doc_id,
+            'status': 'processing'
+        })
+    except Exception as e:
+        print(f"Reanalyze error: {e}")
         import traceback; traceback.print_exc()
         return jsonify({'error': str(e)}), 500
     finally:
@@ -1734,3 +1777,197 @@ def toggle_app(app_id):
 # ==============================================================================
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=Config.DEBUG)
+
+
+# ---- Prompts Settings API ----------------------------------------------------
+
+PROMPT_REGISTRY = {
+    "synopsis": {
+        "name": "Synopsis Agent",
+        "description": "Extracts a structured synopsis of document contents including title, purpose, sections, and key topics.",
+        "purpose": "Document structure analysis",
+        "input_params": ["document_text", "document_type"],
+        "output_format": "JSON with document_title, stated_purpose, sections_found, key_topics_covered, etc.",
+        "order": 0,
+        "category": "Analysis Pipeline"
+    },
+    "compliance": {
+        "name": "Compliance Agent",
+        "description": "Analyzes documents for compliance gaps, missing requirements, and regulatory weaknesses.",
+        "purpose": "Compliance gap detection",
+        "input_params": ["document_text", "document_type", "synopsis"],
+        "output_format": "JSON with findings array and compliance score (0-100)",
+        "order": 1,
+        "category": "Analysis Pipeline"
+    },
+    "security": {
+        "name": "Security Agent",
+        "description": "Identifies security vulnerabilities, weak controls, and potential attack vectors.",
+        "purpose": "Security analysis",
+        "input_params": ["document_text", "document_type", "synopsis"],
+        "output_format": "JSON with security findings and security score (0-100)",
+        "order": 2,
+        "category": "Analysis Pipeline"
+    },
+    "risk": {
+        "name": "Risk Agent",
+        "description": "Identifies operational, legal, financial, and reputational risks.",
+        "purpose": "Risk assessment",
+        "input_params": ["document_text", "document_type", "synopsis"],
+        "output_format": "JSON with risk findings, risk score, and risk level",
+        "order": 3,
+        "category": "Analysis Pipeline"
+    },
+    "framework_mapping": {
+        "name": "Framework Mapping Agent",
+        "description": "Maps documents against 110+ global compliance frameworks (ISO, NIST, GDPR, SAMA, etc.)",
+        "purpose": "Multi-framework compliance mapping",
+        "input_params": ["document_text", "document_type"],
+        "output_format": "JSON with alignment scores and control mappings for each framework",
+        "order": 4,
+        "category": "Framework Analysis"
+    },
+    "framework_comparison": {
+        "name": "Framework Comparison (RAG)",
+        "description": "Compares documents against uploaded framework standards using vector search.",
+        "purpose": "RAG-based framework comparison",
+        "input_params": ["document_text", "document_type", "framework_key", "retrieved_sections"],
+        "output_format": "JSON with alignment_score and mapped_controls",
+        "order": 5,
+        "category": "Framework Analysis"
+    },
+    "single_framework_llm": {
+        "name": "Single Framework LLM",
+        "description": "Compares documents against a single framework using LLM knowledge (no uploaded standard).",
+        "purpose": "Knowledge-based framework comparison",
+        "input_params": ["document_text", "document_type", "framework_key"],
+        "output_format": "JSON with alignment_score and mapped_controls",
+        "order": 6,
+        "category": "Framework Analysis"
+    },
+    "gap_detection": {
+        "name": "Gap Detection Agent",
+        "description": "Performs document-driven gap analysis based on document scope and prior findings.",
+        "purpose": "Policy/procedural gap detection",
+        "input_params": ["document_text", "document_type", "synopsis", "compliance_findings", "security_findings"],
+        "output_format": "JSON with gap array including severity and recommendations",
+        "order": 7,
+        "category": "Analysis Pipeline"
+    },
+    "scoring": {
+        "name": "Scoring Agent",
+        "description": "Scores documents on completeness, security, coverage, clarity, and enforcement.",
+        "purpose": "Document quality scoring",
+        "input_params": ["document_text", "document_type", "synopsis"],
+        "output_format": "JSON with five dimension scores and document_maturity rating",
+        "order": 8,
+        "category": "Analysis Pipeline"
+    },
+    "best_practices": {
+        "name": "Best Practices Agent",
+        "description": "Compares document content against industry best practices.",
+        "purpose": "Best practice comparison",
+        "input_params": ["document_text", "document_type", "synopsis", "gap_detections"],
+        "output_format": "JSON with comparison array showing current vs best practice",
+        "order": 9,
+        "category": "Analysis Pipeline"
+    },
+    "auto_suggest": {
+        "name": "Auto-Suggest Agent",
+        "description": "Generates specific improvement suggestions based on all prior analysis findings.",
+        "purpose": "Improvement recommendations",
+        "input_params": ["document_text", "document_type", "synopsis", "all_findings"],
+        "output_format": "JSON with categorized suggestions (policy_improvement, missing_clause, etc.)",
+        "order": 10,
+        "category": "Recommendations"
+    },
+    "recommendations": {
+        "name": "Recommendations Synthesis Agent",
+        "description": "Synthesizes all findings into a prioritized, deduplicated action plan.",
+        "purpose": "Final recommendation synthesis",
+        "input_params": ["document_type", "all_analysis_results"],
+        "output_format": "JSON with prioritized recommendations including effort levels",
+        "order": 11,
+        "category": "Recommendations"
+    },
+    "multi_doc_gap": {
+        "name": "Multi-Document Gap Detection",
+        "description": "Identifies gaps across a corpus of documents, resolving cross-references.",
+        "purpose": "Cross-document gap analysis",
+        "input_params": ["doc_summaries", "cross_doc_chunks"],
+        "output_format": "JSON with resolved_gaps, corpus_gaps, and contradictions",
+        "order": 12,
+        "category": "Multi-Document"
+    },
+    "multi_doc_synthesis": {
+        "name": "Multi-Document Synthesis",
+        "description": "Combines all individual document results into a unified organizational assessment.",
+        "purpose": "Organizational assessment",
+        "input_params": ["doc_results"],
+        "output_format": "JSON with overall_score, risk_level, coverage_summary, top_priorities",
+        "order": 13,
+        "category": "Multi-Document"
+    },
+    "knowledge_chat": {
+        "name": "Knowledge Base Chat",
+        "description": "RAG-based chat assistant for querying saved policy documents.",
+        "purpose": "Document Q&A with citations",
+        "input_params": ["retrieved_chunks", "chat_history", "user_message"],
+        "output_format": "Natural language answer with source citations",
+        "order": 14,
+        "category": "Knowledge Base"
+    },
+    "standalone_question": {
+        "name": "Standalone Question Generator",
+        "description": "Generates a standalone question based on chat history and new input.",
+        "purpose": "Chat context management",
+        "input_params": ["chat_history", "user_message"],
+        "output_format": "Rephrased standalone question",
+        "order": 15,
+        "category": "Knowledge Base"
+    },
+}
+
+
+@app.route('/api/settings/prompts', methods=['GET'])
+def get_prompts():
+    """Return all available prompts with metadata."""
+    return jsonify({
+        'prompts': PROMPT_REGISTRY,
+        'total_count': len(PROMPT_REGISTRY),
+        'categories': list(set(p['category'] for p in PROMPT_REGISTRY.values()))
+    })
+
+
+@app.route('/api/settings/prompts/<prompt_id>', methods=['GET'])
+def get_prompt_detail(prompt_id):
+    """Return detailed information about a specific prompt including its template."""
+    if prompt_id not in PROMPT_REGISTRY:
+        return jsonify({'error': 'Prompt not found'}), 404
+    
+    from agents import prompts
+    
+    # Get the prompt function
+    prompt_func = getattr(prompts, f"{prompt_id}_prompt", None)
+    if not prompt_func:
+        return jsonify({'error': 'Prompt function not found'}), 404
+    
+    # Get function signature
+    import inspect
+    sig = inspect.signature(prompt_func)
+    params = list(sig.parameters.keys())
+    
+    # Get source code if possible
+    try:
+        source = inspect.getsource(prompt_func)
+    except:
+        source = "Source code not available"
+    
+    result = {
+        'id': prompt_id,
+        'metadata': PROMPT_REGISTRY[prompt_id],
+        'parameters': params,
+        'source_code': source
+    }
+    
+    return jsonify(result)

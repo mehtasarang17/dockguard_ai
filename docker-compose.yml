@@ -38,9 +38,10 @@ services:
       BEDROCK_MODEL_ID: ${BEDROCK_MODEL_ID:-anthropic.claude-3-sonnet-20240229-v1:0}
       UPLOAD_FOLDER: /app/uploads
       DEBUG: ${DEBUG:-False}
-      ANONYMIZED_TELEMETRY: 'False'
+      ANONYZED_TELEMETRY: 'False'
       INTERNAL_TOKEN: docguard-internal-684d74ac-97a6
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      # Use local Ollama from host machine
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-mistral:7b}
     ports:
       - "5002:5000"
@@ -54,6 +55,8 @@ services:
     networks:
       - doc-analyzer-v2
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # ---- Nginx Frontend ----
   doc-analyzer-frontend:
@@ -64,24 +67,19 @@ services:
     environment:
       INTERNAL_TOKEN: docguard-internal-684d74ac-97a6
     ports:
-      - "3001:80"
+      - "3002:80"
     depends_on:
       - doc-analyzer-backend
     networks:
       - doc-analyzer-v2
     restart: unless-stopped
 
-  # ---- Ollama (Local LLM) ----
-  ollama:
-    image: ollama/ollama:latest
-    container_name: doc-analyzer-ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - doc_analyzer_v2_ollama:/root/.ollama
-    networks:
-      - doc-analyzer-v2
-    restart: unless-stopped
+  # ---- Ollama (Local LLM) - DISABLED: Using host's local Ollama ----
+  # To use local Ollama from your host machine:
+  # 1. Make sure Ollama is running locally on port 11434
+  # 2. The backend is configured to access it via host.docker.internal:11434
+  # Note: On macOS/Windows, host.docker.internal works automatically.
+  # On Linux, you may need to add --add-host=host.docker.internal:host-gateway to docker run.
 
 volumes:
   doc_analyzer_v2_db:
@@ -93,8 +91,6 @@ volumes:
   doc_analyzer_v2_chroma_cache:
     driver: local
   doc_analyzer_v2_frameworks:
-    driver: local
-  doc_analyzer_v2_ollama:
     driver: local
 
 networks:

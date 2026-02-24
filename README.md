@@ -37,7 +37,7 @@ docker-compose up --build -d
 ```
 
 ### 3. Access
-- **Frontend:** http://localhost:3001
+- **Frontend:** http://localhost:3002
 - **Backend API:** http://localhost:5002
 - **Health Check:** http://localhost:5002/health
 

@@ -641,6 +641,29 @@
                 </div>
             </div>
 
+            <!-- Prompts Viewer -->
+            <div class="settings-section">
+                <div class="settings-label">
+                    <i class="fas fa-terminal"></i> AI Prompts
+                    <span class="badge badge-secondary">View</span>
+                </div>
+                <p class="settings-desc">View the AI prompts used for document analysis. These prompts guide the AI agents
+                    in extracting insights, checking compliance, and generating recommendations.</p>
+
+                <div class="prompts-container" id="promptsContainer">
+                    <div class="prompts-loading" id="promptsLoading">
+                        <i class="fas fa-spinner fa-spin"></i> Loading prompts...
+                    </div>
+                    <div class="prompts-list" id="promptsList" style="display:none;">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <button class="btn btn-secondary-sm" id="viewPromptsBtn" onclick="loadPrompts()">
+                    <i class="fas fa-eye"></i> View All Prompts
+                </button>
+            </div>
+
             <!-- API Documentation -->
             <div class="settings-section">
                 <div class="settings-label">
@@ -668,7 +691,7 @@
 
                     <div class="api-doc-example">
                         <h4>Example Request</h4>
-                        <pre class="api-code-block" id="apiCurlExample">curl -X GET "http://localhost:3001/api/documents" \
+                        <pre class="api-code-block" id="apiCurlExample">curl -X GET "http://localhost:3002/api/documents" \
   -H "X-API-Key: sk-your-key-here"</pre>
                         <button class="btn-icon" id="copyCurlBtn" title="Copy curl command" style="margin-top:.5rem">
                             <i class="fas fa-copy"></i> Copy
@@ -737,7 +760,7 @@
         </div>
     </div>
 
-    <script src="app.js?v=6"></script>
+    <script src="app.js?v=9"></script>
 </body>
 
 </html>
