@@ -1160,20 +1160,25 @@ def chat():
                 # When a file is uploaded, search KB using the FILE CONTENT as queries
                 # (not the user message like "answer all questions"), so we find relevant KB chunks.
                 file_lines = [l.strip() for l in uploaded_file_context.split('\n') if l.strip() and len(l.strip()) > 10]
-                # Also include the user's message as a query
-                all_queries = [search_query] + file_lines[:20]  # cap at 20 queries
+                # Increase query cap to cover up to 50 questions
+                all_queries = [search_query] + file_lines[:50]
 
-                # Search KB for each query and merge results
+                # Search KB for each query, get top 2, and deduplicate
                 seen_chunks = set()
                 hits = []
                 for q in all_queries:
-                    q_hits = vector_store.search(q, top_k=5)
+                    # If we already have enough context chunks, stop querying to save time
+                    if len(hits) >= 20:
+                        break
+                    
+                    q_hits = vector_store.search(q, top_k=2)
                     for h in q_hits:
-                        # Deduplicate by (doc_id, chunk_index)
                         key = (h.get('doc_id'), h.get('chunk_index'))
                         if key not in seen_chunks and h.get('filename') and h['filename'] != 'unknown' and h.get('doc_id', -1) != -1:
                             seen_chunks.add(key)
                             hits.append(h)
+                            if len(hits) >= 20:  # Strict cap to prevent context window explosion
+                                break
                 print(f"📎 File-upload KB search: {len(all_queries)} queries → {len(hits)} unique KB chunks")
             else:
                 # Normal KB search with user message
@@ -1232,13 +1237,14 @@ UPLOADED FILE ({fname}) — read this to understand what the user is asking:
 
 USER MESSAGE: {message}
 
-CITATION RULES (FOLLOW STRICTLY):
+CITATION RULES AND INSTRUCTIONS (FOLLOW STRICTLY):
 1. Try to answer each question using ONLY information from the KNOWLEDGE BASE CONTEXT above.
 2. When you find the answer in the KB context, cite the EXACT filename from the list above using the format [Source: exact_filename_here]
 3. You MUST use the EXACT filenames listed under "KNOWLEDGE BASE DOCUMENTS". Do NOT shorten, rename, or invent source names.
 4. If a question CANNOT be answered from the KB context, you MAY use your general knowledge to answer it, but you MUST cite it as [Source: External Knowledge]
-5. Be concise but thorough. Use bullet points for lists.
-6. AVOID markdown headers and excessive bolding.
+5. IMPORTANT FOR LARGE FILES: If the uploaded file contains a long list of questions (e.g., more than 10), DO NOT attempt to answer all 50+ questions at once. That will exceed your output limit. Instead, answer the FIRST 5 to 10 questions perfectly with citations, and then add a note saying:
+"**Note:** To get answers for all remaining questions, please click the **Download as Filled File** button below. It will process every question individually and generate a complete file for you."
+6. Be concise but thorough. Use bullet points for lists.
 
 Answer:"""
             else:

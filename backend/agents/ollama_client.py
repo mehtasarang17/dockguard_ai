@@ -36,6 +36,7 @@ class OllamaClient:
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
+                "num_ctx": 8192,
             },
         }
         resp = requests.post(url, json=payload, timeout=300)
