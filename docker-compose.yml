@@ -1,0 +1,102 @@
+version: '3.8'
+
+services:
+  # ---- PostgreSQL ----
+  doc-analyzer-db:
+    image: postgres:16
+    container_name: doc-analyzer-db-v2
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: document_analyzer
+    ports:
+      - "5435:5432"
+    volumes:
+      - doc_analyzer_v2_db:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - doc-analyzer-v2
+
+  # ---- Flask Backend ----
+  doc-analyzer-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: doc-analyzer-backend-v2
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@doc-analyzer-db:5432/document_analyzer
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_BEARER_TOKEN_BEDROCK: ${AWS_BEARER_TOKEN_BEDROCK:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      BEDROCK_MODEL_ID: ${BEDROCK_MODEL_ID:-anthropic.claude-3-sonnet-20240229-v1:0}
+      UPLOAD_FOLDER: /app/uploads
+      DEBUG: ${DEBUG:-False}
+      ANONYMIZED_TELEMETRY: 'False'
+      INTERNAL_TOKEN: docguard-internal-684d74ac-97a6
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-mistral:7b}
+    ports:
+      - "5002:5000"
+    volumes:
+      - doc_analyzer_v2_uploads:/app/uploads
+      - doc_analyzer_v2_chromadb:/app/chromadb_data
+      - doc_analyzer_v2_chroma_cache:/root/.cache/chroma
+    depends_on:
+      doc-analyzer-db:
+        condition: service_healthy
+    networks:
+      - doc-analyzer-v2
+    restart: unless-stopped
+
+  # ---- Nginx Frontend ----
+  doc-analyzer-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: doc-analyzer-frontend-v2
+    environment:
+      INTERNAL_TOKEN: docguard-internal-684d74ac-97a6
+    ports:
+      - "3001:80"
+    depends_on:
+      - doc-analyzer-backend
+    networks:
+      - doc-analyzer-v2
+    restart: unless-stopped
+
+  # ---- Ollama (Local LLM) ----
+  ollama:
+    image: ollama/ollama:latest
+    container_name: doc-analyzer-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - doc_analyzer_v2_ollama:/root/.ollama
+    networks:
+      - doc-analyzer-v2
+    restart: unless-stopped
+
+volumes:
+  doc_analyzer_v2_db:
+    driver: local
+  doc_analyzer_v2_uploads:
+    driver: local
+  doc_analyzer_v2_chromadb:
+    driver: local
+  doc_analyzer_v2_chroma_cache:
+    driver: local
+  doc_analyzer_v2_frameworks:
+    driver: local
+  doc_analyzer_v2_ollama:
+    driver: local
+
+networks:
+  doc-analyzer-v2:
+    driver: bridge

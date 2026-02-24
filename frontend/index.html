@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DocGuard AI — Intelligent Document Compliance Analyzer</title>
+    <meta name="description"
+        content="AI-powered document compliance, security, and risk analysis platform using agentic AI.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="styles.css?v=5">
+</head>
+
+<body>
+    <!-- ===== SIDEBAR ===== -->
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-brand">
+            <div class="brand-icon"><i class="fas fa-shield-halved"></i></div>
+            <span class="brand-text">DocGuard<span class="brand-ai">AI</span></span>
+        </div>
+
+        <nav class="sidebar-nav">
+            <a href="#" class="nav-item active" data-page="dashboard" id="nav-dashboard">
+                <i class="fas fa-chart-line"></i><span>Dashboard</span>
+            </a>
+            <a href="#" class="nav-item" data-page="upload" id="nav-upload">
+                <i class="fas fa-cloud-arrow-up"></i><span>Upload</span>
+            </a>
+            <a href="#" class="nav-item" data-page="documents" id="nav-documents">
+                <i class="fas fa-folder-open"></i><span>Documents</span>
+            </a>
+            <a href="#" class="nav-item" data-page="standards" id="nav-standards">
+                <i class="fas fa-scale-balanced"></i><span>Standards</span>
+            </a>
+            <a href="#" class="nav-item" data-page="analysis" id="nav-analysis">
+                <i class="fas fa-microscope"></i><span>Analysis</span>
+            </a>
+            <a href="#" class="nav-item" data-page="chat" id="nav-chat">
+                <i class="fas fa-robot"></i><span>Knowledge Chat</span>
+            </a>
+            <a href="#" class="nav-item" data-page="history" id="nav-history">
+                <i class="fas fa-clock-rotate-left"></i><span>History</span>
+            </a>
+            <a href="#" class="nav-item" id="nav-settings">
+                <i class="fas fa-cog"></i><span>Settings</span>
+            </a>
+        </nav>
+
+        <div class="sidebar-footer">
+            <div class="footer-badge">
+                <i class="fas fa-bolt"></i>
+                <span>Powered by AWS Bedrock</span>
+            </div>
+        </div>
+    </aside>
+
+    <!-- ===== MAIN CONTENT ===== -->
+    <main class="main-content" id="mainContent">
+
+        <!-- ===== DASHBOARD PAGE ===== -->
+        <section class="page active" id="page-dashboard">
+            <div class="page-header">
+                <div>
+                    <h1 class="page-title">Dashboard</h1>
+                    <p class="page-subtitle">Real-time compliance and security overview</p>
+                </div>
+                <button class="btn btn-primary btn-glow" onclick="navigateTo('upload')">
+                    <i class="fas fa-plus"></i> Analyze New Document
+                </button>
+            </div>
+
+            <!-- Stats Cards -->
+            <div class="stats-grid" id="statsGrid">
+                <div class="stat-card glass-card">
+                    <div class="stat-icon" style="--accent: #8b5cf6"><i class="fas fa-file-lines"></i></div>
+                    <div class="stat-info">
+                        <span class="stat-value" id="statTotalDocs">0</span>
+                        <span class="stat-label">Documents Analyzed</span>
+                    </div>
+                </div>
+                <div class="stat-card glass-card">
+                    <div class="stat-icon" style="--accent: #06b6d4"><i class="fas fa-gauge-high"></i></div>
+                    <div class="stat-info">
+                        <span class="stat-value" id="statAvgScore">–</span>
+                        <span class="stat-label">Avg. Compliance Score</span>
+                    </div>
+                </div>
+                <div class="stat-card glass-card">
+                    <div class="stat-icon" style="--accent: #f59e0b"><i class="fas fa-triangle-exclamation"></i></div>
+                    <div class="stat-info">
+                        <span class="stat-value" id="statHighRisk">0</span>
+                        <span class="stat-label">High-Risk Findings</span>
+                    </div>
+                </div>
+                <div class="stat-card glass-card">
+                    <div class="stat-icon" style="--accent: #10b981"><i class="fas fa-bookmark"></i></div>
+                    <div class="stat-info">
+                        <span class="stat-value" id="statSaved">0</span>
+                        <span class="stat-label">Saved to Knowledge Base</span>
+                    </div>
+                </div>
+                <div class="stat-card glass-card" style="position:relative;">
+                    <div class="stat-icon" style="--accent: #f97316"><i class="fas fa-coins"></i></div>
+                    <div class="stat-info">
+                        <span class="stat-value" id="statLifetimeTokens">–</span>
+                        <span class="stat-label">Total Tokens Used</span>
+                    </div>
+                    <button id="btnResetTokens" class="btn-icon"
+                        style="position:absolute; top:10px; right:10px; background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:0.9rem; padding:5px; transition:color 0.2s;"
+                        title="Reset Tokens to 0">
+                        <i class="fas fa-rotate-right"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Trend Chart -->
+            <div class="chart-section glass-card">
+                <h3 class="section-title"><i class="fas fa-chart-area"></i> Score Trend Over Time</h3>
+                <div class="chart-container">
+                    <canvas id="trendChart"></canvas>
+                </div>
+                <div id="trendEmpty" class="empty-state" style="display:none;">
+                    <i class="fas fa-chart-line"></i>
+                    <p>Upload documents to see trends</p>
+                </div>
+            </div>
+
+            <!-- Recent Documents -->
+            <div class="recent-section glass-card">
+                <h3 class="section-title"><i class="fas fa-clock-rotate-left"></i> Recent Analyses</h3>
+                <div id="recentList" class="recent-list"></div>
+                <div id="recentEmpty" class="empty-state">
+                    <i class="fas fa-inbox"></i>
+                    <p>No documents analyzed yet</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- ===== UPLOAD PAGE ===== -->
+        <section class="page" id="page-upload">
+            <div class="page-header">
+                <div>
+                    <h1 class="page-title">Upload Documents</h1>
+                    <p class="page-subtitle">Analyze one or multiple policies, contracts, and procedures with AI agents
+                    </p>
+                </div>
+            </div>
+
+            <div class="upload-container glass-card">
+                <div class="upload-zone" id="uploadZone">
+                    <div class="upload-animation">
+                        <div class="upload-ring"></div>
+                        <i class="fas fa-cloud-arrow-up upload-main-icon"></i>
+                    </div>
+                    <h3>Drag &amp; drop your documents here</h3>
+                    <p class="upload-hint">or click to browse files (select one or multiple)</p>
+                    <p class="upload-formats"><i class="fas fa-paperclip"></i> PDF, DOCX, DOC, XLSX, CSV, TXT &bull; Max
+                        16 MB each &bull; Up to 10 files</p>
+                    <input type="file" id="fileInput" accept=".pdf,.docx,.doc,.txt,.xlsx,.xls,.csv" hidden multiple>
+                </div>
+
+                <div class="upload-meta" id="uploadMeta" style="display:none;">
+                    <!-- File list for multi-file -->
+                    <div class="selected-files-list" id="selectedFilesList"></div>
+
+                    <div class="doctype-selector">
+                        <label class="field-label">Document Type</label>
+                        <div class="radio-pills">
+                            <label class="pill active">
+                                <input type="radio" name="docType" value="policy" checked>
+                                <i class="fas fa-scroll"></i> Policy
+                            </label>
+                            <label class="pill">
+                                <input type="radio" name="docType" value="contract">
+                                <i class="fas fa-file-contract"></i> Contract
+                            </label>
+                            <label class="pill">
+                                <input type="radio" name="docType" value="procedure">
+                                <i class="fas fa-list-check"></i> Procedure
+                            </label>
+                        </div>
+                    </div>
+
+                    <button class="btn btn-primary btn-lg btn-glow" id="analyzeBtn">
+                        <i class="fas fa-wand-magic-sparkles"></i> <span id="analyzeBtnText">Start AI Analysis</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Processing overlay -->
+            <div class="processing-overlay" id="processingOverlay" style="display:none;">
+                <div class="processing-card glass-card">
+                    <div class="processing-spinner">
+                        <div class="spinner-ring"></div>
+                        <i class="fas fa-brain spinner-icon"></i>
+                    </div>
+                    <h3 id="processingTitle">AI Agents Analyzing Document…</h3>
+                    <p class="processing-status" id="processingStatus">Initializing orchestrator…</p>
+
+                    <!-- Per-document progress (batch mode) -->
+                    <div class="batch-progress" id="batchProgress" style="display:none;">
+                        <div class="batch-doc-list" id="batchDocList"></div>
+                    </div>
+
+                    <div class="agent-pipeline" id="agentPipeline">
+                        <div class="agent-step" data-step="0"><i class="fas fa-eye"></i><span>Synopsis</span>
+                        </div>
+                        <div class="agent-step" data-step="1"><i class="fas fa-check-double"></i><span>Compliance</span>
+                        </div>
+                        <div class="agent-step" data-step="2"><i class="fas fa-shield-halved"></i><span>Security</span>
+                        </div>
+                        <div class="agent-step" data-step="3"><i
+                                class="fas fa-triangle-exclamation"></i><span>Risk</span></div>
+                        <div class="agent-step" data-step="4"><i class="fas fa-sitemap"></i><span>Frameworks</span>
+                        </div>
+                        <div class="agent-step" data-step="5"><i class="fas fa-magnifying-glass"></i><span>Gaps</span>
+                        </div>
+                        <div class="agent-step" data-step="6"><i
+                                class="fas fa-star-half-stroke"></i><span>Scoring</span></div>
+                        <div class="agent-step" data-step="7"><i class="fas fa-ranking-star"></i><span>Best
+                                Practices</span></div>
+                        <div class="agent-step" data-step="8"><i class="fas fa-lightbulb"></i><span>Suggestions</span>
+                        </div>
+                        <div class="agent-step" data-step="9"><i class="fas fa-brain"></i><span>Synthesis</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ===== DOCUMENTS PAGE ===== -->
+        <section class="page" id="page-documents">
+            <div class="page-header">
+                <div>
+                    <h1 class="page-title">Document Library</h1>
+                    <p class="page-subtitle">Manage uploaded and saved documents</p>
+                </div>
+            </div>
+            <div class="documents-grid" id="documentsGrid"></div>
+            <div id="docsEmpty" class="empty-state-large">
+                <i class="fas fa-folder-open"></i>
+                <h3>No Documents Yet</h3>
+                <p>Upload your first document for analysis</p>
+                <button class="btn btn-primary" onclick="navigateTo('upload')"><i class="fas fa-plus"></i>
+                    Upload</button>
+            </div>
+        </section>
+
+        <!-- ===== ANALYSIS PAGE ===== -->
+        <section class="page" id="page-analysis">
+            <div class="page-header">
+                <div>
+                    <h1 class="page-title">Analysis Results</h1>
+                    <p class="page-subtitle" id="analysisDocName">Select a document to view results</p>
+                </div>
+                <div class="header-actions" style="display:flex;gap:.5rem;">
+                    <button class="btn btn-outline" id="saveDocBtn" style="display:none;">
+                        <i class="fas fa-bookmark"></i> Save to Knowledge Base
+                    </button>
+                    <button class="btn btn-primary btn-sm" id="saveAllBtn" style="display:none;">
+                        <i class="fas fa-bookmark"></i> Save All to Knowledge Base
+                    </button>
+                    <button class="btn btn-danger btn-sm" id="deleteDocBtn" style="display:none;">
+                        <i class="fas fa-trash-alt"></i> Delete
+                    </button>
+                </div>
+            </div>
+
+            <!-- Batch document tabs (multi-doc mode only) -->
+            <div class="batch-doc-tabs glass-card" id="batchDocTabs" style="display:none;">
+                <div class="bdt-header">
+                    <span class="bdt-label"><i class="fas fa-layer-group"></i> Batch Analysis</span>
+                    <span class="bdt-count" id="batchDocCount"></span>
+                </div>
+                <div class="bdt-tabs" id="batchTabsContainer"></div>
+            </div>
+
+            <div id="analysisContent" style="display:none;">
+                <!-- Overall Score Ring -->
+                <div class="score-hero glass-card">
+                    <div class="hero-ring">
+                        <svg viewBox="0 0 200 200" class="ring-svg">
+                            <circle cx="100" cy="100" r="85" class="ring-bg" />
+                            <circle cx="100" cy="100" r="85" class="ring-fill" id="heroRing" />
+                        </svg>
+                        <div class="ring-label">
+                            <span class="ring-value" id="heroScore">0</span>
+                            <span class="ring-text">Overall Score</span>
+                        </div>
+                    </div>
+                    <div class="hero-meta">
+                        <div class="meta-item">
+                            <span class="meta-label">Risk Level</span>
+                            <span class="meta-value badge" id="heroRiskLevel">–</span>
+                        </div>
+                        <div class="meta-item">
+                            <span class="meta-label">Maturity</span>
+                            <span class="meta-value badge" id="heroMaturity">–</span>
+                        </div>
+                        <div class="meta-item">
+                            <span class="meta-label">Processing Time</span>
+                            <span class="meta-value" id="heroTime">–</span>
+                        </div>
+                        <div class="meta-item">
+                            <span class="meta-label">Tokens Used</span>
+                            <span class="meta-value" id="heroTokens">–</span>
+                        </div>
+                    </div>
+                    <div class="score-rationale" id="heroScoreRationale"></div>
+                </div>
+
+                <!-- Score Bars -->
+                <div class="score-bars-grid">
+                    <div class="score-bar-card glass-card">
+                        <h4>Core Scores</h4>
+                        <div class="bar-item"><span>Compliance</span>
+                            <div class="bar">
+                                <div class="bar-fill" id="barCompliance"></div>
+                            </div><span class="bar-val" id="valCompliance">0</span>
+                        </div>
+                        <div class="bar-item"><span>Security</span>
+                            <div class="bar">
+                                <div class="bar-fill" id="barSecurity"></div>
+                            </div><span class="bar-val" id="valSecurity">0</span>
+                        </div>
+                        <div class="bar-item"><span>Risk</span>
+                            <div class="bar">
+                                <div class="bar-fill" id="barRisk"></div>
+                            </div><span class="bar-val" id="valRisk">0</span>
+                        </div>
+                    </div>
+                    <div class="score-bar-card glass-card">
+                        <h4>Detailed Scores</h4>
+                        <div class="bar-item"><span>Completeness</span>
+                            <div class="bar">
+                                <div class="bar-fill accent2" id="barComplete"></div>
+                            </div><span class="bar-val" id="valComplete">0</span>
+                        </div>
+                        <div class="bar-item"><span>Security Strength</span>
+                            <div class="bar">
+                                <div class="bar-fill accent2" id="barStrength"></div>
+                            </div><span class="bar-val" id="valStrength">0</span>
+                        </div>
+                        <div class="bar-item"><span>Coverage</span>
+                            <div class="bar">
+                                <div class="bar-fill accent2" id="barCoverage"></div>
+                            </div><span class="bar-val" id="valCoverage">0</span>
+                        </div>
+                        <div class="bar-item"><span>Clarity</span>
+                            <div class="bar">
+                                <div class="bar-fill accent2" id="barClarity"></div>
+                            </div><span class="bar-val" id="valClarity">0</span>
+                        </div>
+                        <div class="bar-item"><span>Enforcement</span>
+                            <div class="bar">
+                                <div class="bar-fill accent2" id="barEnforce"></div>
+                            </div><span class="bar-val" id="valEnforce">0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tabs -->
+                <div class="analysis-tabs glass-card">
+                    <div class="tab-bar">
+                        <button class="tab active" data-tab="findings">Findings</button>
+                        <button class="tab" data-tab="frameworks">Frameworks</button>
+                        <button class="tab" data-tab="gaps">Gap Detection</button>
+                        <button class="tab" data-tab="bestpractices">Best Practices</button>
+                        <button class="tab" data-tab="suggestions">Suggestions</button>
+                        <button class="tab" data-tab="recommendations">Recommendations</button>
+                    </div>
+
+                    <div class="tab-panel active" id="panel-findings">
+                        <div class="findings-cols">
+                            <div>
+                                <h4><i class="fas fa-check-double"></i> Compliance Findings</h4>
+                                <div id="complianceList"></div>
+                            </div>
+                            <div>
+                                <h4><i class="fas fa-shield-halved"></i> Security Findings</h4>
+                                <div id="securityList"></div>
+                            </div>
+                            <div>
+                                <h4><i class="fas fa-triangle-exclamation"></i> Risk Findings</h4>
+                                <div id="riskList"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="tab-panel" id="panel-frameworks">
+                        <div class="frameworks-grid" id="frameworksGrid"></div>
+                    </div>
+
+                    <div class="tab-panel" id="panel-gaps">
+                        <div class="gaps-list" id="gapsList"></div>
+                    </div>
+
+                    <div class="tab-panel" id="panel-bestpractices">
+                        <div class="bp-list" id="bpList"></div>
+                    </div>
+
+                    <div class="tab-panel" id="panel-suggestions">
+                        <div class="suggestions-list" id="suggestionsList"></div>
+                    </div>
+
+                    <div class="tab-panel" id="panel-recommendations">
+                        <div class="recs-list" id="recsList"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="analysisEmpty" class="empty-state-large">
+                <i class="fas fa-microscope"></i>
+                <h3>No Analysis Selected</h3>
+                <p>Select a document from the library or upload a new one</p>
+            </div>
+        </section>
+
+        <!-- ===== HISTORY PAGE ===== -->
+        <section class="page" id="page-history">
+            <div class="page-header">
+                <div>
+                    <h1 class="page-title">Analysis History</h1>
+                    <p class="page-subtitle">Past single and batch document analyses</p>
+                </div>
+                <div class="header-actions">
+                    <button class="btn btn-outline" onclick="loadHistory()">
+                        <i class="fas fa-sync-alt"></i> Refresh
+                    </button>
+                </div>
+            </div>
+
+            <div class="history-list glass-card" id="historyListContainer" style="padding:0">
+                <table class="data-table" id="historyTable">
+                    <thead>
+                        <tr>
+                            <th>Type</th>
+                            <th>Name / Scope</th>
+                            <th>Date</th>
+                            <th>Risk / Maturity</th>
+                            <th>Overall Score</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="historyListBody">
+                        <!-- Populated via JS -->
+                    </tbody>
+                </table>
+                <div id="historyEmpty" class="empty-state-large" style="display:none; padding:4rem 0;">
+                    <i class="fas fa-clock-rotate-left"
+                        style="font-size:3rem; color:var(--border-glass); margin-bottom:1rem;"></i>
+                    <h3>No History Found</h3>
+                    <p class="text-muted">You haven't run any analyses yet.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- ===== STANDARDS PAGE ===== -->
+        <section class="page" id="page-standards">
+            <div class="page-header">
+                <div>
+                    <h1 class="page-title">Framework Standards</h1>
+                    <p class="page-subtitle">Upload compliance framework standards for accurate document analysis</p>
+                </div>
+            </div>
+
+            <div class="standards-grid" id="standardsGrid">
+                <!-- Rendered by JS -->
+            </div>
+        </section>
+
+        <!-- ===== CHAT PAGE ===== -->
+        <section class="page" id="page-chat">
+            <div class="page-header">
+                <div>
+                    <h1 class="page-title">Knowledge Base Chat</h1>
+                    <p class="page-subtitle">Ask questions across all your saved policy documents</p>
+                </div>
+                <div class="page-header-actions">
+                    <button class="btn btn-accent btn-sm" id="reindexBtn" title="Re-index all saved documents">
+                        <i class="fas fa-sync-alt"></i> Reindex KB
+                    </button>
+                    <button class="btn btn-outline btn-sm" id="clearChatBtn" title="Clear chat history">
+                        <i class="fas fa-broom"></i> Clear History
+                    </button>
+                </div>
+            </div>
+
+            <!-- Reindex Progress Bar -->
+            <div class="reindex-progress" id="reindexProgress" style="display:none;">
+                <button class="close-progress-btn" id="closeReindexBtn" style="display:none;" title="Close">
+                    <i class="fas fa-times"></i>
+                </button>
+                <div class="reindex-progress-header">
+                    <span id="reindexMessage">Reindexing…</span>
+                    <span id="reindexPercent">0%</span>
+                </div>
+                <div class="reindex-progress-bar">
+                    <div class="reindex-progress-fill" id="reindexFill" style="width:0%"></div>
+                </div>
+            </div>
+
+            <div class="chat-layout">
+                <div class="chat-sidebar glass-card">
+                    <div class="kb-stats" id="kbStats">
+                        <div class="kb-stat-row">
+                            <i class="fas fa-database"></i>
+                            <span><strong id="kbDocCount">0</strong> documents indexed</span>
+                        </div>
+                        <div class="kb-stat-row">
+                            <i class="fas fa-puzzle-piece"></i>
+                            <span><strong id="kbChunkCount">0</strong> chunks stored</span>
+                        </div>
+                        <div class="kb-stat-row">
+                            <i class="fas fa-coins"></i>
+                            <span><strong id="kbSessionTokens">0</strong> tokens this session</span>
+                        </div>
+                    </div>
+                    <h4><i class="fas fa-bookmark"></i> Indexed Documents</h4>
+                    <div id="chatDocList" class="chat-doc-list"></div>
+                    <div id="chatDocEmpty" class="empty-state-sm">
+                        <p>No documents indexed yet. Save a document from the analysis page.</p>
+                    </div>
+                </div>
+                <div class="chat-main glass-card">
+                    <div class="chat-messages" id="chatMessages">
+                        <div class="chat-welcome">
+                            <i class="fas fa-robot"></i>
+                            <h3>Knowledge Base Assistant</h3>
+                            <p>Ask questions about any of your saved policy documents. I'll search across all of them
+                                and cite my sources.</p>
+                        </div>
+                    </div>
+                    <div class="chat-file-pill" id="chatFilePill" style="display:none">
+                        <i class="fas fa-file-lines"></i>
+                        <span id="chatFileName"></span>
+                        <span id="chatFileChunks" class="text-muted"></span>
+                        <button class="chat-file-pill-x" onclick="removeChatFile()" title="Remove file">&times;</button>
+                    </div>
+                    <div class="chat-input-area" id="chatInputArea">
+                        <input type="file" id="chatFileInput" style="display:none"
+                            accept=".pdf,.doc,.docx,.txt,.xlsx,.xls,.csv">
+                        <button class="btn-icon-only chat-attach-btn"
+                            onclick="document.getElementById('chatFileInput').click()" title="Attach a file">
+                            <i class="fas fa-paperclip"></i>
+                        </button>
+                        <input type="text" id="chatInput" placeholder="Ask a question across all saved documents…"
+                            autocomplete="off">
+                        <button class="btn btn-primary" id="chatSendBtn"><i class="fas fa-paper-plane"></i></button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- ===== CHUNK SIZE MODAL ===== -->
+    <div class="modal-backdrop" id="chunkModal" style="display:none;">
+        <div class="chunk-modal glass-card">
+            <div class="chunk-modal-header">
+                <h2><i class="fas fa-puzzle-piece"></i> Choose Chunk Size</h2>
+                <p>Select how the document should be split for the knowledge base</p>
+            </div>
+            <div class="chunk-options">
+                <label class="chunk-option" data-preset="small">
+                    <input type="radio" name="chunkPreset" value="small">
+                    <div class="chunk-option-content">
+                        <div class="chunk-option-title">
+                            <i class="fas fa-microscope"></i> Small
+                            <span class="chunk-tokens">128–256 tokens</span>
+                        </div>
+                        <p>Ideal for granular queries, specific fact retrieval, and high-precision tasks.</p>
+                    </div>
+                </label>
+                <label class="chunk-option selected" data-preset="medium">
+                    <input type="radio" name="chunkPreset" value="medium" checked>
+                    <div class="chunk-option-content">
+                        <div class="chunk-option-title">
+                            <i class="fas fa-balance-scale"></i> Medium
+                            <span class="chunk-tokens">~512 tokens</span>
+                            <span class="chunk-recommended">Recommended</span>
+                        </div>
+                        <p>Good balance between context and precision. Best for most use cases.</p>
+                    </div>
+                </label>
+                <label class="chunk-option" data-preset="large">
+                    <input type="radio" name="chunkPreset" value="large">
+                    <div class="chunk-option-content">
+                        <div class="chunk-option-title">
+                            <i class="fas fa-book-open"></i> Large
+                            <span class="chunk-tokens">1024+ tokens</span>
+                        </div>
+                        <p>Best for retrieving thematic, comprehensive answers or long-form content.</p>
+                    </div>
+                </label>
+            </div>
+            <div class="chunk-overlap-info">
+                <i class="fas fa-layer-group"></i>
+                <span><strong>Overlap:</strong> 20% overlap between consecutive chunks is automatically applied to
+                    ensure no context is lost at boundaries (best practice).</span>
+            </div>
+            <div class="chunk-modal-actions">
+                <button class="btn btn-outline" id="chunkCancelBtn">Cancel</button>
+                <button class="btn btn-primary" id="chunkConfirmBtn">
+                    <i class="fas fa-bookmark"></i> Save with Selected Size
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-backdrop" id="settingsModal" style="display:none;">
+        <div class="settings-modal glass-card">
+            <div class="settings-header">
+                <h2><i class="fas fa-cog"></i> System Settings</h2>
+                <button class="close-modal-btn" id="closeSettingsBtn"><i class="fas fa-times"></i></button>
+            </div>
+
+            <!-- Authorized Applications -->
+            <div class="settings-section">
+                <div class="settings-label">
+                    <i class="fas fa-shield-halved"></i> Authorized Applications
+                </div>
+                <p class="settings-desc">Manage which external applications can access the DocGuard AI API. Each app
+                    gets a unique API key.</p>
+
+                <div id="appsList" class="apps-list">
+                    <!-- Populated by JS -->
+                </div>
+
+                <div class="add-app-form" id="addAppForm">
+                    <input type="text" id="newAppNameInput" placeholder="Application name (e.g. SIEM Integration)"
+                        class="app-name-input">
+                    <button class="btn btn-primary-sm" id="addAppBtn">
+                        <i class="fas fa-plus"></i> Add
+                    </button>
+                </div>
+            </div>
+
+            <!-- API Documentation -->
+            <div class="settings-section">
+                <div class="settings-label">
+                    <i class="fas fa-book"></i> API Documentation
+                    <span class="badge badge-secondary">REST</span>
+                </div>
+                <p class="settings-desc">Use these endpoints to integrate DocGuard AI with your company's applications.
+                </p>
+
+                <div class="api-doc-block">
+                    <div class="api-doc-auth">
+                        <h4>Authentication</h4>
+                        <p>Include your API key in every request using one of these headers:</p>
+                        <code class="api-code-inline">X-API-Key: sk-your-key-here</code>
+                        <p style="margin-top:.3rem">or</p>
+                        <code class="api-code-inline">Authorization: Bearer sk-your-key-here</code>
+                    </div>
+
+                    <div class="api-doc-endpoints">
+                        <h4>Available Endpoints</h4>
+                        <div class="api-endpoint-list" id="apiEndpointList">
+                            <!-- Populated by JS -->
+                        </div>
+                    </div>
+
+                    <div class="api-doc-example">
+                        <h4>Example Request</h4>
+                        <pre class="api-code-block" id="apiCurlExample">curl -X GET "http://localhost:3001/api/documents" \
+  -H "X-API-Key: sk-your-key-here"</pre>
+                        <button class="btn-icon" id="copyCurlBtn" title="Copy curl command" style="margin-top:.5rem">
+                            <i class="fas fa-copy"></i> Copy
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+    <!-- ===== LLM PROVIDER SELECTOR MODAL ===== -->
+    <div class="modal-backdrop" id="llmProviderModal" style="display:none;">
+        <div class="llm-modal glass-card">
+            <div class="llm-modal-header">
+                <div class="llm-modal-icon"><i class="fas fa-microchip"></i></div>
+                <h2>Choose Your AI Engine</h2>
+                <p>Select which LLM provider to use for document analysis</p>
+            </div>
+            <div class="llm-provider-cards" id="llmProviderCards">
+                <!-- Bedrock Card -->
+                <div class="llm-provider-card" data-provider="bedrock" id="llmCardBedrock">
+                    <div class="llm-card-badge">Cloud</div>
+                    <div class="llm-card-icon" style="background:rgba(249,115,22,.12);color:#f97316;">
+                        <i class="fab fa-aws"></i>
+                    </div>
+                    <h3>AWS Bedrock</h3>
+                    <p class="llm-card-desc">Amazon Nova / Claude models via AWS. Requires AWS credentials.</p>
+                    <div class="llm-card-status" id="llmBedrockStatus">
+                        <i class="fas fa-check-circle" style="color:var(--accent-success)"></i>
+                        <span>Ready (configured)</span>
+                    </div>
+                </div>
+                <!-- Ollama Card -->
+                <div class="llm-provider-card" data-provider="ollama" id="llmCardOllama">
+                    <div class="llm-card-badge free">Free</div>
+                    <div class="llm-card-icon" style="background:rgba(139,92,246,.12);color:#a78bfa;">
+                        <i class="fas fa-server"></i>
+                    </div>
+                    <h3>Ollama (Local)</h3>
+                    <p class="llm-card-desc">Free, private, runs locally. No cloud costs. Uses Mistral 7B.</p>
+                    <div class="llm-card-status" id="llmOllamaStatus">
+                        <i class="fas fa-spinner fa-spin" style="color:var(--accent-warning)"></i>
+                        <span>Checking…</span>
+                    </div>
+                </div>
+            </div>
+            <!-- Pull progress -->
+            <div class="llm-pull-progress" id="llmPullProgress" style="display:none;">
+                <div class="llm-pull-header">
+                    <i class="fas fa-download"></i>
+                    <span id="llmPullMessage">Downloading model…</span>
+                </div>
+                <div class="llm-pull-bar">
+                    <div class="llm-pull-fill" id="llmPullFill"></div>
+                </div>
+            </div>
+            <div class="llm-modal-actions">
+                <button class="btn btn-primary btn-lg btn-glow" id="llmConfirmBtn" disabled>
+                    <i class="fas fa-rocket"></i> <span id="llmConfirmText">Select a provider</span>
+                </button>
+            </div>
+            <div class="llm-modal-note">
+                <i class="fas fa-info-circle"></i>
+                You can switch providers anytime from <strong>Settings</strong>.
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js?v=6"></script>
+</body>
+
+</html>

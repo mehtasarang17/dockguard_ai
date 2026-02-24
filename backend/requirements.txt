@@ -1,0 +1,16 @@
+flask==3.1.0
+flask-cors==5.0.1
+sqlalchemy==2.0.36
+psycopg2-binary==2.9.10
+boto3==1.36.5
+requests==2.32.3
+langgraph==0.2.62
+langchain-core>=0.3.34
+gunicorn==23.0.0
+chromadb==0.4.24
+numpy<2.0.0
+markdownify<0.14
+markitdown==0.0.1a4
+langchain-text-splitters==0.3.6
+openpyxl
+python-docx
