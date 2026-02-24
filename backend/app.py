@@ -1245,6 +1245,7 @@ CITATION RULES AND INSTRUCTIONS (FOLLOW STRICTLY):
 5. IMPORTANT FOR LARGE FILES: If the uploaded file contains a long list of questions (e.g., more than 10), DO NOT attempt to answer all 50+ questions at once. That will exceed your output limit. Instead, answer the FIRST 5 to 10 questions perfectly with citations, and then add a note saying:
 "**Note:** To get answers for all remaining questions, please click the **Download as Filled File** button below. It will process every question individually and generate a complete file for you."
 6. Be concise but thorough. Use bullet points for lists.
+7. DO NOT use Markdown numbered lists (like "1. ", "2. ") for the questions. This breaks the UI formatting. Instead, use bold headers like **Q1:**, **Q2:**, etc.
 
 Answer:"""
             else:
