@@ -976,12 +976,152 @@ async function renderFrameworks(mappings) {
 
 async function showFwSelector(container, keepExisting) {
     const fwMeta = {
-        CIS: { name: 'CIS Controls', icon: 'fa-shield-halved', color: '#6366f1' },
-        GDPR: { name: 'GDPR', icon: 'fa-euro-sign', color: '#8b5cf6' },
-        HIPAA: { name: 'HIPAA', icon: 'fa-hospital', color: '#ec4899' },
+        // International Standards
         ISO27001: { name: 'ISO 27001', icon: 'fa-certificate', color: '#06b6d4' },
+        ISO27002: { name: 'ISO 27002', icon: 'fa-certificate', color: '#0891b2' },
+        ISO27005: { name: 'ISO 27005', icon: 'fa-certificate', color: '#0e7490' },
+        ISO27701: { name: 'ISO 27701', icon: 'fa-certificate', color: '#155e75' },
+        ISO22301: { name: 'ISO 22301', icon: 'fa-business-time', color: '#2563eb' },
+        ISO31000: { name: 'ISO 31000', icon: 'fa-chart-line', color: '#4f46e5' },
+        // USA
         NIST: { name: 'NIST CSF', icon: 'fa-landmark', color: '#10b981' },
+        NIST_800_53: { name: 'NIST 800-53', icon: 'fa-shield-alt', color: '#059669' },
+        NIST_800_171: { name: 'NIST 800-171', icon: 'fa-user-shield', color: '#047857' },
+        HIPAA: { name: 'HIPAA', icon: 'fa-hospital', color: '#ec4899' },
+        SOX: { name: 'SOX', icon: 'fa-file-invoice-dollar', color: '#f59e0b' },
+        FISMA: { name: 'FISMA', icon: 'fa-flag-usa', color: '#dc2626' },
+        FedRAMP: { name: 'FedRAMP', icon: 'fa-cloud', color: '#2563eb' },
+        CCPA: { name: 'CCPA', icon: 'fa-user-lock', color: '#7c3aed' },
+        CPRA: { name: 'CPRA', icon: 'fa-user-lock', color: '#6d28d9' },
+        GLBA: { name: 'GLBA', icon: 'fa-university', color: '#db2777' },
+        FERPA: { name: 'FERPA', icon: 'fa-graduation-cap', color: '#ea580c' },
+        COPPA: { name: 'COPPA', icon: 'fa-child', color: '#14b8a6' },
+        TSC: { name: 'TSC', icon: 'fa-clipboard-check', color: '#0d9488' },
+        CJIS: { name: 'CJIS', icon: 'fa-gavel', color: '#1e40af' },
+        FIPS_140: { name: 'FIPS 140', icon: 'fa-lock', color: '#4338ca' },
+        CMMC: { name: 'CMMC', icon: 'fa-shield-virus', color: '#3730a3' },
+        NERC_CIP: { name: 'NERC CIP', icon: 'fa-bolt', color: '#ca8a04' },
+        HIPAA_HITECH: { name: 'HIPAA HITECH', icon: 'fa-hospital-user', color: '#db2777' },
+        // Europe
+        GDPR: { name: 'GDPR', icon: 'fa-euro-sign', color: '#8b5cf6' },
+        NIS2: { name: 'NIS2', icon: 'fa-network-wired', color: '#7c3aed' },
+        DORA: { name: 'DORA', icon: 'fa-shield-virus', color: '#6d28d9' },
+        AI_ACT: { name: 'AI Act', icon: 'fa-robot', color: '#9333ea' },
+        eIDAS: { name: 'eIDAS', icon: 'fa-id-card', color: '#8b5cf6' },
+        UK_GDPR: { name: 'UK GDPR', icon: 'fa-crown', color: '#7c3aed' },
+        UK_DPA: { name: 'UK DPA 2018', icon: 'fa-shield', color: '#6d28d9' },
+        UK_NIS: { name: 'UK NIS', icon: 'fa-network-wired', color: '#6d28d9' },
+        PSD2: { name: 'PSD2', icon: 'fa-credit-card', color: '#0891b2' },
+        EMD: { name: 'EMD', icon: 'fa-money-bill-wave', color: '#0e7490' },
+        CSRD: { name: 'CSRD', icon: 'fa-file-alt', color: '#155e75' },
+        SFDR: { name: 'SFDR', icon: 'fa-leaf', color: '#16a34a' },
+        MiFID_II: { name: 'MiFID II', icon: 'fa-chart-bar', color: '#2563eb' },
+        MiCA: { name: 'MiCA', icon: 'fa-bitcoin-sign', color: '#f59e0b' },
+        UK_SMCR: { name: 'UK SMCR', icon: 'fa-user-tie', color: '#dc2626' },
+        UK_SYSC: { name: 'UK SYSC', icon: 'fa-building-columns', color: '#b91c1c' },
+        CRR: { name: 'CRR', icon: 'fa-landmark', color: '#0891b2' },
+        CRD: { name: 'CRD', icon: 'fa-file-contract', color: '#0e7490' },
+        FATF: { name: 'FATF', icon: 'fa-globe', color: '#2563eb' },
+        TISAX: { name: 'TISAX', icon: 'fa-car', color: '#dc2626' },
+        // Canada
+        PIPEDA: { name: 'PIPEDA', icon: 'fa-maple-leaf', color: '#dc2626' },
+        CANADA_PRIVACY: { name: 'Canada Privacy', icon: 'fa-user-secret', color: '#b91c1c' },
+        // Australia & NZ
+        ACSC_E8: { name: 'ACSC Essential 8', icon: 'fa-kangaroo', color: '#f59e0b' },
+        AU_PRIVACY: { name: 'Aus Privacy Act', icon: 'fa-user-shield', color: '#d97706' },
+        APRA_CPS234: { name: 'APRA CPS 234', icon: 'fa-landmark', color: '#b45309' },
+        AU_ISM: { name: 'Aus ISM', icon: 'fa-shield-alt', color: '#92400e' },
+        NZ_PRIVACY: { name: 'NZ Privacy Act', icon: 'fa-kiwi-bird', color: '#14b8a6' },
+        // Asia-Pacific
+        SG_PDPA: { name: 'SG PDPA', icon: 'fa-building', color: '#ef4444' },
+        TH_PDPA: { name: 'Thailand PDPA', icon: 'fa-temple', color: '#f97316' },
+        ID_PDPA: { name: 'Indonesia PDP', icon: 'fa-island-tropical', color: '#22c55e' },
+        JP_APPI: { name: 'Japan APPI', icon: 'fa-torii-gate', color: '#dc2626' },
+        CN_PIPL: { name: 'China PIPL', icon: 'fa-dragon', color: '#dc2626' },
+        MY_PDPA: { name: 'Malaysia PDPA', icon: 'fa-flag', color: '#f59e0b' },
+        PH_PDPA: { name: 'Philippines DPA', icon: 'fa-sun', color: '#f97316' },
+        IN_IT_ACT: { name: 'India IT Act', icon: 'fa-laptop-code', color: '#f97316' },
+        IN_SPDI: { name: 'India SPDI', icon: 'fa-database', color: '#ea580c' },
+        CERT_IN: { name: 'CERT-In', icon: 'fa-shield-virus', color: '#dc2626' },
+        HK_PDPO: { name: 'HK PDPO', icon: 'fa-building-columns', color: '#ef4444' },
+        TW_PDPA: { name: 'Taiwan PDPA', icon: 'fa-flag', color: '#3b82f6' },
+        VN_CYBER_LAW: { name: 'Vietnam Cyber Law', icon: 'fa-shield', color: '#dc2626' },
+        BD_DPA: { name: 'Bangladesh DPA', icon: 'fa-flag', color: '#16a34a' },
+        KR_PIPA: { name: 'Korea PIPA', icon: 'fa-flag', color: '#3b82f6' },
+        // India Specific
+        IN_DPDP: { name: 'India DPDP Act', icon: 'fa-scale-balanced', color: '#f97316' },
+        IN_NCIIPC: { name: 'NCIIPC', icon: 'fa-network-wired', color: '#ea580c' },
+        IN_NIST: { name: 'India NIST', icon: 'fa-shield-halved', color: '#dc2626' },
+        IN_MHA_CYBER: { name: 'MHA Cyber', icon: 'fa-shield-alt', color: '#b91c1c' },
+        IN_MCA: { name: 'MCA Cyber', icon: 'fa-building', color: '#991b1b' },
+        IN_RBI: { name: 'RBI Cyber', icon: 'fa-landmark', color: '#7f1d1d' },
+        IN_SEBI: { name: 'SEBI Cyber', icon: 'fa-chart-line', color: '#9f1239' },
+        IN_TRAI: { name: 'TRAI Cyber', icon: 'fa-tower-cell', color: '#be123c' },
+        IN_UIDAI: { name: 'UIDAI Aadhaar', icon: 'fa-fingerprint', color: '#c2410c' },
+        IN_IRDAI: { name: 'IRDAI Cyber', icon: 'fa-file-shield', color: '#9a3412' },
+        // Middle East
+        SAMA: { name: 'SAMA', icon: 'fa-landmark', color: '#16a34a' },
+        SAMA_CSF: { name: 'SAMA CSF', icon: 'fa-shield', color: '#15803d' },
+        SAMA_BCM: { name: 'SAMA BCM', icon: 'fa-business-time', color: '#166534' },
+        SAMA_IT_GOV: { name: 'SAMA IT Gov', icon: 'fa-sitemap', color: '#14532d' },
+        SAMA_RISK: { name: 'SAMA Risk', icon: 'fa-chart-line', color: '#22c55e' },
+        SAMA_OPS: { name: 'SAMA Ops', icon: 'fa-cogs', color: '#15803d' },
+        KSA_PDPL: { name: 'KSA PDPL', icon: 'fa-user-shield', color: '#059669' },
+        KSA_NCA_ECC: { name: 'KSA NCA ECC', icon: 'fa-shield-alt', color: '#047857' },
+        KSA_NCA_IOT: { name: 'KSA NCA IoT', icon: 'fa-wifi', color: '#10b981' },
+        KSA_CLOUD: { name: 'KSA Cloud', icon: 'fa-cloud', color: '#14b8a6' },
+        KSA_CRITICAL: { name: 'KSA Critical', icon: 'fa-exclamation-triangle', color: '#dc2626' },
+        UAE_PDPL: { name: 'UAE PDPL', icon: 'fa-user-shield', color: '#d97706' },
+        UAE_CIA: { name: 'UAE CIA', icon: 'fa-shield-virus', color: '#f59e0b' },
+        UAE_CLOUD: { name: 'UAE Cloud', icon: 'fa-cloud', color: '#0ea5e9' },
+        UAE_IOT: { name: 'UAE IoT', icon: 'fa-wifi', color: '#06b6d4' },
+        UAE_DIFC: { name: 'UAE DIFC', icon: 'fa-building-columns', color: '#8b5cf6' },
+        UAE_ADGM: { name: 'UAE ADGM', icon: 'fa-landmark', color: '#7c3aed' },
+        UAE_TDRA: { name: 'UAE TDRA', icon: 'fa-broadcast-tower', color: '#ec4899' },
+        UAE_CB_UAE: { name: 'UAE CB UAE', icon: 'fa-university', color: '#f59e0b' },
+        UAE_NESA: { name: 'UAE NESA', icon: 'fa-shield-alt', color: '#9333ea' },
+        UAE_IAR: { name: 'UAE IAR', icon: 'fa-lock', color: '#db2777' },
+        QA_QCB: { name: 'Qatar QCB', icon: 'fa-landmark', color: '#8b5cf6' },
+        QA_NCSC: { name: 'Qatar NCSC', icon: 'fa-shield', color: '#7c3aed' },
+        QA_CLOUD: { name: 'Qatar Cloud', icon: 'fa-cloud', color: '#06b6d4' },
+        QA_CRITICAL: { name: 'Qatar Critical', icon: 'fa-exclamation-circle', color: '#dc2626' },
+        BH_PDPL: { name: 'Bahrain PDPL', icon: 'fa-user-lock', color: '#ec4899' },
+        BH_CBB: { name: 'Bahrain CBB', icon: 'fa-landmark', color: '#db2777' },
+        BH_CLOUD: { name: 'Bahrain Cloud', icon: 'fa-cloud', color: '#14b8a6' },
+        BH_NCSC: { name: 'Bahrain NCSC', icon: 'fa-shield', color: '#f59e0b' },
+        OM_PDPL: { name: 'Oman PDPL', icon: 'fa-mosque', color: '#14b8a6' },
+        OM_CBO: { name: 'Oman CBO', icon: 'fa-landmark', color: '#0d9488' },
+        OM_CLOUD: { name: 'Oman Cloud', icon: 'fa-cloud', color: '#14b8a6' },
+        KW_CSF: { name: 'Kuwait CSF', icon: 'fa-shield-virus', color: '#06b6d4' },
+        KW_CBK: { name: 'Kuwait CBK', icon: 'fa-university', color: '#0891b2' },
+        KW_CLOUD: { name: 'Kuwait Cloud', icon: 'fa-cloud', color: '#0ea5e9' },
+        // Africa
+        ZA_POPIA: { name: 'SA POPIA', icon: 'fa-shield-alt', color: '#16a34a' },
+        NG_DPA: { name: 'Nigeria DPA', icon: 'fa-user-shield', color: '#22c55e' },
+        KE_DPA: { name: 'Kenya DPA', icon: 'fa-fingerprint', color: '#15803d' },
+        GH_DPA: { name: 'Ghana DPA', icon: 'fa-flag', color: '#eab308' },
+        RW_DPA: { name: 'Rwanda DPA', icon: 'fa-mountain', color: '#14b8a6' },
+        EG_DPL: { name: 'Egypt DPL', icon: 'fa-pyramid', color: '#ca8a04' },
+        EG_CBE: { name: 'Egypt CBE', icon: 'fa-landmark', color: '#a16207' },
+        EG_CLOUD: { name: 'Egypt Cloud', icon: 'fa-cloud', color: '#eab308' },
+        EG_NTRA: { name: 'Egypt NTRA', icon: 'fa-broadcast-tower', color: '#facc15' },
+        // Latin America
+        BR_LGPD: { name: 'Brazil LGPD', icon: 'fa-leaf', color: '#16a34a' },
+        MX_LFPDPPP: { name: 'Mexico LFPDPPP', icon: 'fa-cactus', color: '#059669' },
+        AR_PDPA: { name: 'Argentina PDPA', icon: 'fa-sun', color: '#0ea5e9' },
+        CL_LAW: { name: 'Chile Law', icon: 'fa-mountain', color: '#dc2626' },
+        CO_LAW: { name: 'Colombia Law', icon: 'fa-coffee', color: '#facc15' },
+        PE_LAW: { name: 'Peru Law', icon: 'fa-flag', color: '#dc2626' },
+        // Industry Specific
+        CIS: { name: 'CIS Controls', icon: 'fa-shield-halved', color: '#6366f1' },
+        PCIDSS: { name: 'PCI DSS', icon: 'fa-credit-card', color: '#dc2626' },
+        SWIFT_CSP: { name: 'SWIFT CSP', icon: 'fa-money-bill-transfer', color: '#f59e0b' },
+        SOC1: { name: 'SOC 1', icon: 'fa-file-shield', color: '#8b5cf6' },
         SOC2: { name: 'SOC 2', icon: 'fa-file-shield', color: '#f59e0b' },
+        SOC3: { name: 'SOC 3', icon: 'fa-file-shield', color: '#ec4899' },
+        BASEL: { name: 'Basel', icon: 'fa-landmark', color: '#0891b2' },
+        SOLVENCY_II: { name: 'Solvency II', icon: 'fa-file-contract', color: '#0e7490' },
+        MAR: { name: 'MAR', icon: 'fa-gavel', color: '#6366f1' },
     };
 
     // Fetch upload status
@@ -2567,7 +2707,7 @@ function updateCurlExample() {
     const el = document.getElementById('apiCurlExample');
     if (!el) return;
     const key = currentApiKey || 'sk-your-key-here';
-    el.textContent = `curl -X GET "http://localhost:3001/api/documents" \\\n  -H "X-API-Key: ${key}"`;
+    el.textContent = `curl -X GET "http://localhost:3002/api/documents" \\\n  -H "X-API-Key: ${key}"`;
 }
 
 // Copy curl example
@@ -2588,12 +2728,143 @@ document.getElementById('copyCurlBtn')?.addEventListener('click', () => {
 // ============================================================
 
 const FRAMEWORK_META = {
-    CIS: { name: 'CIS Controls', icon: 'fa-shield-halved', description: 'Center for Internet Security Controls', color: '#6366f1' },
-    GDPR: { name: 'GDPR', icon: 'fa-euro-sign', description: 'General Data Protection Regulation', color: '#8b5cf6' },
-    HIPAA: { name: 'HIPAA', icon: 'fa-hospital', description: 'Health Insurance Portability & Accountability', color: '#ec4899' },
+    // International Standards
     ISO27001: { name: 'ISO 27001', icon: 'fa-certificate', description: 'Information Security Management System', color: '#06b6d4' },
+    ISO27002: { name: 'ISO 27002', icon: 'fa-certificate', description: 'Information Security Controls', color: '#0891b2' },
+    ISO27005: { name: 'ISO 27005', icon: 'fa-certificate', description: 'Information Security Risk Management', color: '#0e7490' },
+    ISO27701: { name: 'ISO 27701', icon: 'fa-certificate', description: 'Privacy Information Management - PIMS', color: '#155e75' },
+    ISO22301: { name: 'ISO 22301', icon: 'fa-business-time', description: 'Business Continuity Management', color: '#2563eb' },
+    ISO31000: { name: 'ISO 31000', icon: 'fa-chart-line', description: 'Risk Management Guidelines', color: '#4f46e5' },
+    // USA
     NIST: { name: 'NIST CSF', icon: 'fa-landmark', description: 'NIST Cybersecurity Framework', color: '#10b981' },
+    NIST_800_53: { name: 'NIST 800-53', icon: 'fa-shield-alt', description: 'Security & Privacy Controls', color: '#059669' },
+    NIST_800_171: { name: 'NIST 800-171', icon: 'fa-user-shield', description: 'Protecting Controlled Unclassified Information', color: '#047857' },
+    HIPAA: { name: 'HIPAA', icon: 'fa-hospital', description: 'Health Insurance Portability & Accountability', color: '#ec4899' },
+    SOX: { name: 'SOX', icon: 'fa-file-invoice-dollar', description: 'Sarbanes-Oxley Act', color: '#f59e0b' },
+    FISMA: { name: 'FISMA', icon: 'fa-flag-usa', description: 'Federal Information Security Management', color: '#dc2626' },
+    FedRAMP: { name: 'FedRAMP', icon: 'fa-cloud', description: 'Federal Risk & Authorization Management', color: '#2563eb' },
+    CCPA: { name: 'CCPA', icon: 'fa-user-lock', description: 'California Consumer Privacy Act', color: '#7c3aed' },
+    CPRA: { name: 'CPRA', icon: 'fa-user-lock', description: 'California Privacy Rights Act', color: '#6d28d9' },
+    GLBA: { name: 'GLBA', icon: 'fa-university', description: 'Gramm-Leach-Bliley Act', color: '#db2777' },
+    FERPA: { name: 'FERPA', icon: 'fa-graduation-cap', description: 'Family Educational Rights & Privacy', color: '#ea580c' },
+    COPPA: { name: 'COPPA', icon: 'fa-child', description: 'Children Online Privacy Protection', color: '#14b8a6' },
+    TSC: { name: 'TSC', icon: 'fa-clipboard-check', description: 'Trust Services Criteria', color: '#0d9488' },
+    CJIS: { name: 'CJIS', icon: 'fa-gavel', description: 'Criminal Justice Information Services', color: '#1e40af' },
+    FIPS_140: { name: 'FIPS 140', icon: 'fa-lock', description: 'Cryptographic Module Security', color: '#4338ca' },
+    CMMC: { name: 'CMMC', icon: 'fa-shield-virus', description: 'Cybersecurity Maturity Model', color: '#3730a3' },
+    NERC_CIP: { name: 'NERC CIP', icon: 'fa-bolt', description: 'Critical Infrastructure Protection', color: '#ca8a04' },
+    HIPAA_HITECH: { name: 'HIPAA HITECH', icon: 'fa-hospital-user', description: 'Health IT & Clinical Health Act', color: '#db2777' },
+    // Europe
+    GDPR: { name: 'GDPR', icon: 'fa-euro-sign', description: 'General Data Protection Regulation', color: '#8b5cf6' },
+    NIS2: { name: 'NIS2', icon: 'fa-network-wired', description: 'Network & Information Security Directive 2', color: '#7c3aed' },
+    DORA: { name: 'DORA', icon: 'fa-shield-virus', description: 'Digital Operational Resilience Act', color: '#6d28d9' },
+    AI_ACT: { name: 'AI Act', icon: 'fa-robot', description: 'EU Artificial Intelligence Act', color: '#9333ea' },
+    eIDAS: { name: 'eIDAS', icon: 'fa-id-card', description: 'Electronic ID & Trust Services', color: '#8b5cf6' },
+    UK_GDPR: { name: 'UK GDPR', icon: 'fa-crown', description: 'UK General Data Protection', color: '#7c3aed' },
+    UK_DPA: { name: 'UK DPA 2018', icon: 'fa-shield', description: 'UK Data Protection Act', color: '#6d28d9' },
+    UK_NIS: { name: 'UK NIS', icon: 'fa-network-wired', description: 'UK Network & Information Systems', color: '#6d28d9' },
+    PSD2: { name: 'PSD2', icon: 'fa-credit-card', description: 'Payment Services Directive 2', color: '#0891b2' },
+    EMD: { name: 'EMD', icon: 'fa-money-bill-wave', description: 'Electronic Money Directive', color: '#0e7490' },
+    CSRD: { name: 'CSRD', icon: 'fa-file-alt', description: 'Corporate Sustainability Reporting', color: '#155e75' },
+    SFDR: { name: 'SFDR', icon: 'fa-leaf', description: 'Sustainable Finance Disclosure', color: '#16a34a' },
+    MiFID_II: { name: 'MiFID II', icon: 'fa-chart-bar', description: 'Markets in Financial Instruments', color: '#2563eb' },
+    MiCA: { name: 'MiCA', icon: 'fa-bitcoin-sign', description: 'Markets in Crypto-Assets', color: '#f59e0b' },
+    UK_SMCR: { name: 'UK SMCR', icon: 'fa-user-tie', description: 'Senior Managers & Certification', color: '#dc2626' },
+    UK_SYSC: { name: 'UK SYSC', icon: 'fa-building-columns', description: 'Senior Management Systems', color: '#b91c1c' },
+    CRR: { name: 'CRR', icon: 'fa-landmark', description: 'Capital Requirements Regulation', color: '#0891b2' },
+    CRD: { name: 'CRD', icon: 'fa-file-contract', description: 'Capital Requirements Directive', color: '#0e7490' },
+    FATF: { name: 'FATF', icon: 'fa-globe', description: 'Financial Action Task Force', color: '#2563eb' },
+    TISAX: { name: 'TISAX', icon: 'fa-car', description: 'Trusted Info Security Assessment', color: '#dc2626' },
+    // Canada
+    PIPEDA: { name: 'PIPEDA', icon: 'fa-maple-leaf', description: 'Personal Information Protection Act', color: '#dc2626' },
+    CANADA_PRIVACY: { name: 'Canada Privacy', icon: 'fa-user-secret', description: 'Canadian Privacy Act', color: '#b91c1c' },
+    // Australia & NZ
+    ACSC_E8: { name: 'ACSC Essential 8', icon: 'fa-shield', description: 'Australian Cyber Security Centre', color: '#f59e0b' },
+    AU_PRIVACY: { name: 'Aus Privacy Act', icon: 'fa-user-shield', description: 'Australian Privacy Principles', color: '#d97706' },
+    APRA_CPS234: { name: 'APRA CPS 234', icon: 'fa-landmark', description: 'Prudential Standard Cyber Security', color: '#b45309' },
+    AU_ISM: { name: 'Aus ISM', icon: 'fa-shield-alt', description: 'Australian Information Security Manual', color: '#92400e' },
+    NZ_PRIVACY: { name: 'NZ Privacy Act', icon: 'fa-shield', description: 'New Zealand Privacy Act 2020', color: '#14b8a6' },
+    // Asia-Pacific
+    SG_PDPA: { name: 'SG PDPA', icon: 'fa-building', description: 'Singapore Personal Data Protection', color: '#ef4444' },
+    TH_PDPA: { name: 'Thailand PDPA', icon: 'fa-temple', description: 'Thailand Personal Data Protection', color: '#f97316' },
+    ID_PDPA: { name: 'Indonesia PDP', icon: 'fa-island-tropical', description: 'Indonesia Personal Data Protection', color: '#22c55e' },
+    JP_APPI: { name: 'Japan APPI', icon: 'fa-torii-gate', description: 'Act on Protection of Personal Info', color: '#dc2626' },
+    CN_PIPL: { name: 'China PIPL', icon: 'fa-dragon', description: 'Personal Information Protection Law', color: '#dc2626' },
+    MY_PDPA: { name: 'Malaysia PDPA', icon: 'fa-flag', description: 'Personal Data Protection Act 2010', color: '#f59e0b' },
+    PH_PDPA: { name: 'Philippines DPA', icon: 'fa-sun', description: 'Data Privacy Act of 2012', color: '#f97316' },
+    IN_IT_ACT: { name: 'India IT Act', icon: 'fa-laptop-code', description: 'Information Technology Act 2000', color: '#f97316' },
+    IN_SPDI: { name: 'India SPDI', icon: 'fa-database', description: 'Sensitive Personal Data Rules', color: '#ea580c' },
+    CERT_IN: { name: 'CERT-In', icon: 'fa-shield-virus', description: 'Indian Computer Emergency Response', color: '#dc2626' },
+    HK_PDPO: { name: 'HK PDPO', icon: 'fa-building-columns', description: 'Personal Data Privacy Ordinance', color: '#ef4444' },
+    TW_PDPA: { name: 'Taiwan PDPA', icon: 'fa-flag', description: 'Personal Data Protection Act', color: '#3b82f6' },
+    VN_CYBER_LAW: { name: 'Vietnam Cyber Law', icon: 'fa-shield', description: 'Cybersecurity Law 2018', color: '#dc2626' },
+    BD_DPA: { name: 'Bangladesh DPA', icon: 'fa-flag', description: 'Data Protection Act 2023', color: '#16a34a' },
+    KR_PIPA: { name: 'Korea PIPA', icon: 'fa-flag', description: 'Personal Information Protection Act', color: '#3b82f6' },
+    // India Specific
+    IN_DPDP: { name: 'India DPDP Act', icon: 'fa-scale-balanced', description: 'Digital Personal Data Protection 2023', color: '#f97316' },
+    IN_NCIIPC: { name: 'NCIIPC', icon: 'fa-network-wired', description: 'National Critical Info Infrastructure', color: '#ea580c' },
+    IN_NIST: { name: 'India NIST', icon: 'fa-shield-halved', description: 'National Information Security Guidelines', color: '#dc2626' },
+    IN_MHA_CYBER: { name: 'MHA Cyber', icon: 'fa-shield-alt', description: 'Ministry of Home Affairs Cyber', color: '#b91c1c' },
+    IN_MCA: { name: 'MCA Cyber', icon: 'fa-building', description: 'Ministry of Corporate Affairs', color: '#991b1b' },
+    IN_RBI: { name: 'RBI Cyber', icon: 'fa-landmark', description: 'Reserve Bank of India Cyber Security', color: '#7f1d1d' },
+    IN_SEBI: { name: 'SEBI Cyber', icon: 'fa-chart-line', description: 'Securities Exchange Board Cyber', color: '#9f1239' },
+    IN_TRAI: { name: 'TRAI Cyber', icon: 'fa-tower-cell', description: 'Telecom Regulatory Cyber Security', color: '#be123c' },
+    IN_UIDAI: { name: 'UIDAI Aadhaar', icon: 'fa-fingerprint', description: 'Aadhaar Data Security', color: '#c2410c' },
+    IN_IRDAI: { name: 'IRDAI Cyber', icon: 'fa-file-shield', description: 'Insurance Regulatory Cyber', color: '#9a3412' },
+    // Middle East
+    SAMA: { name: 'SAMA', icon: 'fa-landmark', description: 'Saudi Arabian Monetary Authority', color: '#16a34a' },
+    SAMA_CSF: { name: 'SAMA CSF', icon: 'fa-shield', description: 'Cyber Security Framework', color: '#15803d' },
+    SAMA_BCM: { name: 'SAMA BCM', icon: 'fa-business-time', description: 'Business Continuity Management', color: '#166534' },
+    SAMA_IT_GOV: { name: 'SAMA IT Gov', icon: 'fa-sitemap', description: 'IT Governance Framework', color: '#14532d' },
+    SAMA_RISK: { name: 'SAMA Risk', icon: 'fa-chart-line', description: 'Risk Management Guidelines', color: '#22c55e' },
+    SAMA_OPS: { name: 'SAMA Ops', icon: 'fa-cogs', description: 'Operational Resilience', color: '#15803d' },
+    KSA_PDPL: { name: 'KSA PDPL', icon: 'fa-user-shield', description: 'Personal Data Protection Law', color: '#059669' },
+    KSA_NCA_ECC: { name: 'KSA NCA ECC', icon: 'fa-shield-alt', description: 'Essential Cybersecurity Controls', color: '#047857' },
+    KSA_NCA_IOT: { name: 'KSA NCA IoT', icon: 'fa-wifi', description: 'IoT Cybersecurity Controls', color: '#10b981' },
+    KSA_CLOUD: { name: 'KSA Cloud', icon: 'fa-cloud', description: 'Cloud Cybersecurity Controls', color: '#14b8a6' },
+    KSA_CRITICAL: { name: 'KSA Critical', icon: 'fa-exclamation-triangle', description: 'Critical Systems Controls', color: '#dc2626' },
+    UAE_PDPL: { name: 'UAE PDPL', icon: 'fa-user-shield', description: 'UAE Personal Data Protection Law', color: '#d97706' },
+    UAE_NESA: { name: 'UAE NESA', icon: 'fa-shield-alt', description: 'UAE National Electronic Security', color: '#9333ea' },
+    UAE_IAR: { name: 'UAE IAR', icon: 'fa-lock', description: 'UAE Information Assurance Regulation', color: '#db2777' },
+    QA_QCB: { name: 'Qatar QCB', icon: 'fa-landmark', description: 'Qatar Central Bank Cyber Security', color: '#8b5cf6' },
+    QA_NCSC: { name: 'Qatar NCSC', icon: 'fa-shield', description: 'National Cyber Security Center', color: '#7c3aed' },
+    QA_CLOUD: { name: 'Qatar Cloud', icon: 'fa-cloud', description: 'Cloud Security Controls', color: '#06b6d4' },
+    QA_CRITICAL: { name: 'Qatar Critical', icon: 'fa-exclamation-circle', description: 'Critical Infrastructure', color: '#dc2626' },
+    BH_PDPL: { name: 'Bahrain PDPL', icon: 'fa-user-lock', description: 'Bahrain Personal Data Protection', color: '#ec4899' },
+    OM_PDPL: { name: 'Oman PDPL', icon: 'fa-mosque', description: 'Oman Personal Data Protection', color: '#14b8a6' },
+    KW_CSF: { name: 'Kuwait CSF', icon: 'fa-shield-virus', description: 'Kuwait Cyber Security Framework', color: '#06b6d4' },
+    // Africa
+    JO_CYBER_LAW: { name: 'Jordan Cyber', icon: 'fa-shield', description: 'Cybercrime Law', color: '#16a34a' },
+    JO_CBJ: { name: 'Jordan CBJ', icon: 'fa-university', description: 'Central Bank of Jordan', color: '#15803d' },
+    // Africa
+    ZA_POPIA: { name: 'SA POPIA', icon: 'fa-shield-alt', description: 'Protection of Personal Information Act', color: '#16a34a' },
+    LB_CYBER: { name: 'Lebanon Cyber', icon: 'fa-shield-alt', description: 'Cybersecurity Guidelines', color: '#dc2626' },
+    LB_BDL: { name: 'Lebanon BDL', icon: 'fa-landmark', description: 'Banque du Liban', color: '#b91c1c' },
+    // Iraq
+    IQ_CBI: { name: 'Iraq CBI', icon: 'fa-university', description: 'Central Bank of Iraq', color: '#059669' },
+    // Africa
+    NG_DPA: { name: 'Nigeria DPA', icon: 'fa-user-shield', description: 'Nigeria Data Protection Act 2023', color: '#22c55e' },
+    KE_DPA: { name: 'Kenya DPA', icon: 'fa-fingerprint', description: 'Kenya Data Protection Act 2019', color: '#15803d' },
+    GH_DPA: { name: 'Ghana DPA', icon: 'fa-flag', description: 'Data Protection Act 2012', color: '#eab308' },
+    RW_DPA: { name: 'Rwanda DPA', icon: 'fa-mountain', description: 'Data Protection Law', color: '#14b8a6' },
+    EG_DPL: { name: 'Egypt DPL', icon: 'fa-pyramid', description: 'Egypt Data Protection Law', color: '#ca8a04' },
+    // Latin America
+    BR_LGPD: { name: 'Brazil LGPD', icon: 'fa-leaf', description: 'Lei Geral de Proteção de Dados', color: '#16a34a' },
+    MX_LFPDPPP: { name: 'Mexico LFPDPPP', icon: 'fa-cactus', description: 'Federal Data Protection Law', color: '#059669' },
+    AR_PDPA: { name: 'Argentina PDPA', icon: 'fa-sun', description: 'Personal Data Protection Act', color: '#0ea5e9' },
+    CL_LAW: { name: 'Chile Law', icon: 'fa-mountain', description: 'Chile Data Protection Law', color: '#dc2626' },
+    CO_LAW: { name: 'Colombia Law', icon: 'fa-coffee', description: 'Colombia Data Protection Law', color: '#facc15' },
+    PE_LAW: { name: 'Peru Law', icon: 'fa-flag', description: 'Personal Data Protection Law', color: '#dc2626' },
+    // Industry Specific
+    CIS: { name: 'CIS Controls', icon: 'fa-shield-halved', description: 'Center for Internet Security Controls', color: '#6366f1' },
+    PCIDSS: { name: 'PCI DSS', icon: 'fa-credit-card', description: 'Payment Card Industry Data Security', color: '#dc2626' },
+    SWIFT_CSP: { name: 'SWIFT CSP', icon: 'fa-money-bill-transfer', description: 'Customer Security Programme', color: '#f59e0b' },
+    SOC1: { name: 'SOC 1', icon: 'fa-file-shield', description: 'Service Organization Control 1', color: '#8b5cf6' },
     SOC2: { name: 'SOC 2', icon: 'fa-file-shield', description: 'Service Organization Control 2', color: '#f59e0b' },
+    SOC3: { name: 'SOC 3', icon: 'fa-file-shield', description: 'Service Organization Control 3', color: '#ec4899' },
+    BASEL: { name: 'Basel', icon: 'fa-landmark', description: 'Basel Accord Banking Standards', color: '#0891b2' },
+    SOLVENCY_II: { name: 'Solvency II', icon: 'fa-file-contract', description: 'EU Insurance Regulation', color: '#0e7490' },
+    MAR: { name: 'MAR', icon: 'fa-gavel', description: 'Market Abuse Regulation', color: '#6366f1' },
 };
 
 async function loadStandardsPage() {
@@ -2612,6 +2883,10 @@ async function loadStandardsPage() {
 
 function renderStandardsCards(frameworks) {
     const grid = document.getElementById('standardsGrid');
+    
+    // DEBUG
+    console.log('Rendering standards cards. Frameworks:', Object.keys(frameworks));
+    console.log('FRAMEWORK_META keys:', Object.keys(FRAMEWORK_META).slice(0, 5) + '...');
 
     grid.innerHTML = Object.entries(FRAMEWORK_META).map(([key, meta]) => {
         const versions = frameworks[key] || [];
@@ -2653,7 +2928,8 @@ function renderStandardsCards(frameworks) {
                 `).join('')}
             </div>` : ''}
 
-            <div class="std-upload-area">
+            <div class="std-upload-area" style="border: 2px dashed #6366f1; padding: 15px; margin-top: 10px; background: rgba(99,102,241,0.1);">
+                <div style="color: #fff; font-weight: bold; margin-bottom: 8px;">📤 Upload Standard Document</div>
                 <div class="std-upload-form" id="upload-form-${key}">
                     <input type="text" class="std-version-input" id="version-${key}" placeholder="Version (e.g. 2022, v8)" />
                     <label class="std-file-label" id="file-label-${key}">
@@ -2661,8 +2937,8 @@ function renderStandardsCards(frameworks) {
                         <i class="fas fa-cloud-arrow-up"></i>
                         <span>Choose file</span>
                     </label>
-                    <button class="btn btn-accent btn-sm" id="upload-btn-${key}" onclick="uploadStandard('${key}')" disabled>
-                        <i class="fas fa-upload"></i> Upload
+                    <button class="btn btn-accent btn-sm" id="upload-btn-${key}" onclick="uploadStandard('${key}')" disabled style="background: #10b981; color: white; font-weight: bold; padding: 8px 16px;">
+                        <i class="fas fa-upload"></i> UPLOAD
                     </button>
                 </div>
             </div>
@@ -2677,52 +2953,112 @@ function handleFwFileSelect(key) {
     const uploadBtn = document.getElementById(`upload-btn-${key}`);
     const versionInput = document.getElementById(`version-${key}`);
 
+    console.log('File selected for', key, ':', input.files);
+
     if (input.files.length > 0) {
-        label.querySelector('span').textContent = input.files[0].name;
+        const fileName = input.files[0].name;
+        label.querySelector('span').textContent = fileName;
         label.classList.add('has-file');
+        console.log('File name set to:', fileName);
+        
         // Enable upload button only if version is also set
-        uploadBtn.disabled = !versionInput.value.trim();
+        const hasVersion = versionInput.value.trim() !== '';
+        uploadBtn.disabled = !hasVersion;
+        console.log('Upload button disabled:', uploadBtn.disabled, '(version:', hasVersion + ')');
 
         // Also listen for version input changes
         versionInput.oninput = () => {
-            uploadBtn.disabled = !versionInput.value.trim();
+            const hasVer = versionInput.value.trim() !== '';
+            uploadBtn.disabled = !hasVer;
+            console.log('Version changed, upload button disabled:', uploadBtn.disabled);
         };
     }
 }
 
 async function uploadStandard(key) {
+    // DEBUG: Immediate alert to confirm function is called
+    alert('DEBUG: Upload button clicked for ' + key);
+    
     const fileInput = document.getElementById(`file-${key}`);
     const versionInput = document.getElementById(`version-${key}`);
     const btn = document.getElementById(`upload-btn-${key}`);
 
-    if (!fileInput.files.length || !versionInput.value.trim()) return;
+    console.log('=== Upload Debug ===');
+    console.log('Framework key:', key);
+    console.log('File input element:', fileInput);
+    console.log('File input files:', fileInput ? fileInput.files : null);
+    console.log('File input files length:', fileInput && fileInput.files ? fileInput.files.length : 0);
+    console.log('Version input:', versionInput ? versionInput.value : null);
+
+    if (!fileInput) {
+        alert('Error: File input not found for ' + key);
+        console.error('File input not found:', `file-${key}`);
+        return;
+    }
+
+    if (!fileInput.files || fileInput.files.length === 0) {
+        alert('Please select a file first');
+        return;
+    }
+    
+    if (!versionInput || !versionInput.value.trim()) {
+        alert('Please enter a version (e.g., 2022, v1.0)');
+        return;
+    }
+
+    const file = fileInput.files[0];
+    const version = versionInput.value.trim();
+
+    console.log('Selected file:', file.name, 'Size:', file.size);
+    console.log('Version:', version);
 
     const formData = new FormData();
-    formData.append('file', fileInput.files[0]);
+    formData.append('file', file);
     formData.append('framework_key', key);
-    formData.append('version', versionInput.value.trim());
+    formData.append('version', version);
+
+    // Log FormData contents
+    for (let pair of formData.entries()) {
+        console.log('FormData:', pair[0], pair[1]);
+    }
 
     btn.disabled = true;
     btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading...';
 
     try {
-        const res = await fetch(`${API_BASE}/api/frameworks/upload`, {
+        const uploadUrl = `${API_BASE}/api/frameworks/upload`;
+        console.log('Sending POST request to:', uploadUrl);
+        
+        const res = await fetch(uploadUrl, {
             method: 'POST',
             body: formData,
         });
-        const data = await res.json();
-
-        if (!res.ok) {
-            alert(data.error || 'Upload failed');
+        
+        console.log('Response received, status:', res.status);
+        const responseText = await res.text();
+        console.log('Raw response:', responseText);
+        
+        let data;
+        try {
+            data = JSON.parse(responseText);
+        } catch (e) {
+            console.error('Failed to parse JSON response:', e);
+            alert('Server returned invalid response. Check console.');
             return;
         }
 
-        // Success — reload the standards page
+        if (!res.ok) {
+            console.error('Upload error:', data);
+            alert(data.error || data.message || `Upload failed (status: ${res.status})`);
+            return;
+        }
+
+        console.log('Upload successful:', data);
         btn.innerHTML = '<i class="fas fa-check"></i> Uploaded!';
         setTimeout(() => loadStandardsPage(), 800);
     } catch (e) {
-        console.error('Framework upload failed', e);
-        alert('Failed to upload framework standard');
+        console.error('Framework upload failed with exception:', e);
+        alert('Failed to upload: ' + (e.message || 'Network error. Check console for details.'));
     } finally {
         btn.innerHTML = '<i class="fas fa-upload"></i> Upload';
         btn.disabled = false;
@@ -2987,3 +3323,188 @@ openSettings = function (e) {
     origOpenFn(e);
     updateProviderBadge();
 };
+
+// ===== PROMPTS VIEWER FUNCTIONS =====
+
+let promptsData = null;
+
+async function loadPrompts() {
+    const container = document.getElementById('promptsContainer');
+    const loading = document.getElementById('promptsLoading');
+    const list = document.getElementById('promptsList');
+    const btn = document.getElementById('viewPromptsBtn');
+    
+    if (!container || !list) return;
+    
+    // Toggle visibility
+    if (list.style.display === 'block') {
+        list.style.display = 'none';
+        loading.style.display = 'none';
+        btn.innerHTML = '<i class="fas fa-eye"></i> View All Prompts';
+        return;
+    }
+    
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Loading...';
+    loading.style.display = 'block';
+    list.style.display = 'none';
+    
+    try {
+        const res = await fetch(`${API_BASE}/api/settings/prompts`);
+        if (!res.ok) throw new Error('Failed to fetch prompts');
+        
+        const data = await res.json();
+        promptsData = data.prompts;
+        
+        renderPromptsList(promptsData, data.categories);
+        
+        loading.style.display = 'none';
+        list.style.display = 'block';
+        btn.innerHTML = '<i class="fas fa-eye-slash"></i> Hide Prompts';
+    } catch (e) {
+        console.error('Failed to load prompts:', e);
+        loading.innerHTML = '<i class="fas fa-exclamation-circle" style="color:var(--accent-danger)"></i> Failed to load prompts';
+        btn.innerHTML = '<i class="fas fa-retry"></i> Retry';
+    }
+}
+
+function renderPromptsList(prompts, categories) {
+    const list = document.getElementById('promptsList');
+    if (!list) return;
+    
+    // Group prompts by category
+    const grouped = {};
+    categories.forEach(cat => grouped[cat] = []);
+    
+    Object.entries(prompts).forEach(([id, prompt]) => {
+        if (grouped[prompt.category]) {
+            grouped[prompt.category].push({ id, ...prompt });
+        }
+    });
+    
+    // Sort within each category by order
+    Object.keys(grouped).forEach(cat => {
+        grouped[cat].sort((a, b) => a.order - b.order);
+    });
+    
+    // Build HTML
+    let html = '';
+    const categoryIcons = {
+        'Analysis Pipeline': 'fa-microscope',
+        'Framework Analysis': 'fa-balance-scale',
+        'Recommendations': 'fa-lightbulb',
+        'Multi-Document': 'fa-copy',
+        'Knowledge Base': 'fa-book'
+    };
+    
+    Object.entries(grouped).forEach(([category, items]) => {
+        if (items.length === 0) return;
+        
+        const icon = categoryIcons[category] || 'fa-code';
+        
+        html += `
+            <div class="prompt-category">
+                <div class="prompt-category-header" onclick="togglePromptCategory(this)">
+                    <i class="fas fa-chevron-down"></i>
+                    <span>${category}</span>
+                    <span class="badge badge-secondary" style="margin-left:auto;font-size:.75rem">${items.length}</span>
+                </div>
+                <div class="prompt-category-items">
+                    ${items.map(item => `
+                        <div class="prompt-item" onclick="showPromptDetail('${item.id}')">
+                            <div class="prompt-item-header">
+                                <span class="prompt-item-name">${item.name}</span>
+                                <span class="prompt-item-order">#${item.order}</span>
+                            </div>
+                            <div class="prompt-item-desc">${item.description}</div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    });
+    
+    list.innerHTML = html;
+}
+
+function togglePromptCategory(header) {
+    header.classList.toggle('collapsed');
+    const items = header.nextElementSibling;
+    if (items) {
+        items.style.display = header.classList.contains('collapsed') ? 'none' : 'block';
+    }
+}
+
+async function showPromptDetail(promptId) {
+    if (!promptsData || !promptsData[promptId]) return;
+    
+    const prompt = promptsData[promptId];
+    
+    // Create modal
+    const modal = document.createElement('div');
+    modal.className = 'modal-backdrop';
+    modal.style.display = 'flex';
+    modal.innerHTML = `
+        <div class="settings-modal glass-card prompt-detail-modal">
+            <div class="settings-header">
+                <h2><i class="fas fa-terminal"></i> ${prompt.name}</h2>
+                <button class="close-modal-btn" onclick="this.closest('.modal-backdrop').remove()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            
+            <div class="prompt-detail-header">
+                <div class="prompt-detail-meta">
+                    <span><i class="fas fa-hashtag"></i> Order: ${prompt.order}</span>
+                    <span><i class="fas fa-folder"></i> ${prompt.category}</span>
+                    <span><i class="fas fa-bullseye"></i> ${prompt.purpose}</span>
+                </div>
+            </div>
+            
+            <div class="prompt-detail-section">
+                <h4>Description</h4>
+                <p>${prompt.description}</p>
+            </div>
+            
+            <div class="prompt-detail-section">
+                <h4>Input Parameters</h4>
+                <div class="prompt-params-list">
+                    ${prompt.input_params.map(p => `<span class="prompt-param-tag">${p}</span>`).join('')}
+                </div>
+            </div>
+            
+            <div class="prompt-detail-section">
+                <h4>Output Format</h4>
+                <div class="prompt-output-format">${prompt.output_format}</div>
+            </div>
+            
+            <div class="prompt-detail-section">
+                <h4>Prompt Template</h4>
+                <pre class="prompt-code-block" id="promptCode_${promptId}">Loading...</pre>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+    
+    // Close on backdrop click
+    modal.onclick = (e) => {
+        if (e.target === modal) modal.remove();
+    };
+    
+    // Fetch source code
+    try {
+        const res = await fetch(`${API_BASE}/api/settings/prompts/${promptId}`);
+        if (res.ok) {
+            const data = await res.json();
+            const codeBlock = document.getElementById(`promptCode_${promptId}`);
+            if (codeBlock && data.source_code) {
+                codeBlock.textContent = data.source_code;
+            }
+        }
+    } catch (e) {
+        const codeBlock = document.getElementById(`promptCode_${promptId}`);
+        if (codeBlock) {
+            codeBlock.textContent = 'Source code not available';
+        }
+    }
+}

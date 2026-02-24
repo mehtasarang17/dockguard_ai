@@ -178,67 +178,202 @@ Rules:
 #  4. FRAMEWORK MAPPING AGENT
 # ===========================================================================
 def framework_mapping_prompt(document_text: str, document_type: str) -> str:
-    return f"""You are a GRC (Governance, Risk, Compliance) expert. Map the following {document_type} against six industry frameworks and assess alignment.
+    return f"""You are a GRC (Governance, Risk, Compliance) expert. Map the following {document_type} against global industry frameworks and assess alignment.
 
 DOCUMENT:
-\"\"\"
+'''
 {_trim(document_text)}
-\"\"\"
+''' 
 
 For **each** of these frameworks, provide an alignment score and relevant control mappings:
-1. ISO 27001:2022 (latest revision — Annex A has 93 controls in 4 themes)
-2. SOC 2
-3. NIST Cybersecurity Framework
-4. CIS Controls
-5. GDPR
-6. HIPAA
+
+**International Standards:**
+1. ISO 27001:2022 (Information Security Management)
+2. ISO 27002:2022 (Information Security Controls)
+3. ISO 27005:2022 (Risk Management)
+4. ISO 27701:2019 (Privacy Information Management)
+5. ISO 22301 (Business Continuity)
+6. ISO 31000 (Risk Management Guidelines)
+
+**USA:**
+7. NIST CSF (Cybersecurity Framework)
+8. NIST 800-53 (Security & Privacy Controls)
+9. NIST 800-171 (Protecting CUI)
+10. HIPAA (Health Insurance Portability)
+11. SOX (Sarbanes-Oxley)
+12. FISMA (Federal Info Security)
+13. FedRAMP (Cloud Authorization)
+14. CCPA (California Privacy)
+15. CPRA (California Privacy Rights)
+16. GLBA (Financial Privacy)
+17. FERPA (Education Privacy)
+18. COPPA (Children Privacy)
+19. TSC (Trust Services Criteria)
+20. CJIS (Criminal Justice Info)
+
+**Europe:**
+21. GDPR (General Data Protection)
+22. NIS2 (Network Security Directive)
+23. DORA (Digital Resilience)
+24. AI Act (EU AI Regulation)
+25. eIDAS (Electronic ID)
+
+**Canada:**
+26. PIPEDA (Personal Info Protection)
+27. Canada Privacy Act
+
+**Australia & NZ:**
+28. ACSC Essential Eight
+29. Australian Privacy Act
+30. APRA CPS 234
+31. Australian ISM
+32. NZ Privacy Act
+
+**Asia-Pacific:**
+33. Singapore PDPA
+34. Thailand PDPA
+35. Indonesia PDP Law
+36. Japan APPI
+37. China PIPL
+38. Malaysia PDPA
+39. Philippines DPA
+40. Hong Kong PDPO
+41. Korea PIPA
+
+**India:**
+42. India IT Act 2000
+43. India SPDI Rules
+44. CERT-In Guidelines
+45. India DPDP Act 2023
+46. NCIIPC Guidelines
+47. India National NIST
+48. MHA Cyber Security
+49. MCA Cyber Security
+50. RBI Cyber Security
+51. SEBI Cyber Security
+52. TRAI Cyber Security
+53. UIDAI Aadhaar Security
+54. IRDAI Cyber Security
+
+**Middle East:**
+55. SAMA (Saudi Arabia)
+56. UAE PDPL
+57. UAE NESA IAS
+58. UAE IAR
+59. Qatar QCB
+60. Bahrain PDPL
+61. Oman PDPL
+62. Kuwait CSF
+
+**Africa:**
+63. South Africa POPIA
+64. Nigeria DPA
+65. Kenya DPA
+66. Egypt DPL
+
+**Latin America:**
+67. Brazil LGPD
+68. Mexico LFPDPPP
+69. Argentina PDPA
+70. Chile Data Protection
+71. Colombia Data Protection
+
+**Industry Specific:**
+72. CIS Controls
+73. PCI DSS v4.0
+74. SWIFT CSP
+75. SOC 2
+76. Basel III/IV
+77. Solvency II
+78. MAR (Market Abuse)
 
 IMPORTANT — ISO 27001:2022 Annex A Control Structure:
 - Theme 1 – Organizational controls (A.5.1 – A.5.37)
 - Theme 2 – People controls (A.6.1 – A.6.8)
 - Theme 3 – Physical controls (A.7.1 – A.7.14)
 - Theme 4 – Technological controls (A.8.1 – A.8.34)
-Use ONLY these control IDs (A.5.x, A.6.x, A.7.x, A.8.x). Do NOT use old 2013-era IDs like A.9.x, A.10.x, A.12.x, etc.
+Use ONLY these control IDs (A.5.x, A.6.x, A.7.x, A.8.x). Do NOT use old 2013-era IDs.
 
-Return **valid JSON only**:
+Return **valid JSON only** with all frameworks listed above:
 {{
-  "ISO27001": {{
-    "alignment_score": <0-100>,
-    "standard_version": "2022",
-    "mapped_controls": [
-      {{"control_id": "A.5.x", "theme": "Organizational|People|Physical|Technological", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}
-    ]
-  }},
-  "SOC2": {{
-    "alignment_score": <0-100>,
-    "mapped_controls": [
-      {{"control_id": "CC x.x", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}
-    ]
-  }},
-  "NIST": {{
-    "alignment_score": <0-100>,
-    "mapped_controls": [
-      {{"control_id": "XX.XX-X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}
-    ]
-  }},
-  "CIS": {{
-    "alignment_score": <0-100>,
-    "mapped_controls": [
-      {{"control_id": "CIS X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}
-    ]
-  }},
-  "GDPR": {{
-    "alignment_score": <0-100>,
-    "mapped_controls": [
-      {{"article": "Art. X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}
-    ]
-  }},
-  "HIPAA": {{
-    "alignment_score": <0-100>,
-    "mapped_controls": [
-      {{"rule": "...", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}
-    ]
-  }}
+  "ISO27001": {{ "alignment_score": <0-100>, "standard_version": "2022", "mapped_controls": [{{"control_id": "A.5.x", "theme": "Organizational|People|Physical|Technological", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "ISO27002": {{ "alignment_score": <0-100>, "standard_version": "2022", "mapped_controls": [{{"control_id": "X.XX", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "ISO27005": {{ "alignment_score": <0-100>, "standard_version": "2022", "mapped_controls": [{{"control_id": "X.X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "ISO27701": {{ "alignment_score": <0-100>, "standard_version": "2019", "mapped_controls": [{{"control_id": "X.X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "ISO22301": {{ "alignment_score": <0-100>, "standard_version": "2019", "mapped_controls": [{{"control_id": "X.X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "ISO31000": {{ "alignment_score": <0-100>, "standard_version": "2018", "mapped_controls": [{{"control_id": "X.X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "NIST": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "XX.XX-X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "NIST_800_53": {{ "alignment_score": <0-100>, "standard_version": "Rev5", "mapped_controls": [{{"control_id": "XX-XX", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "NIST_800_171": {{ "alignment_score": <0-100>, "standard_version": "Rev2", "mapped_controls": [{{"control_id": "X.X.X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "HIPAA": {{ "alignment_score": <0-100>, "mapped_controls": [{{"rule": "...", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "SOX": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "X.X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "FISMA": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "X.X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "FedRAMP": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "X.X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "CCPA": {{ "alignment_score": <0-100>, "mapped_controls": [{{"section": "Sec X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "CPRA": {{ "alignment_score": <0-100>, "mapped_controls": [{{"section": "Sec X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "GLBA": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "FERPA": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "COPPA": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "TSC": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "CC X.X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "CJIS": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "X.X.X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "GDPR": {{ "alignment_score": <0-100>, "mapped_controls": [{{"article": "Art. X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "NIS2": {{ "alignment_score": <0-100>, "standard_version": "2023", "mapped_controls": [{{"article": "Art. X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "DORA": {{ "alignment_score": <0-100>, "standard_version": "2023", "mapped_controls": [{{"article": "Art. X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "AI_ACT": {{ "alignment_score": <0-100>, "standard_version": "2024", "mapped_controls": [{{"article": "Art. X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "eIDAS": {{ "alignment_score": <0-100>, "standard_version": "2014", "mapped_controls": [{{"article": "Art. X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "PIPEDA": {{ "alignment_score": <0-100>, "mapped_controls": [{{"principle": "Principle X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "CANADA_PRIVACY": {{ "alignment_score": <0-100>, "mapped_controls": [{{"section": "Sec X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "ACSC_E8": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "Maturity Level X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "AU_PRIVACY": {{ "alignment_score": <0-100>, "mapped_controls": [{{"app": "APP X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "APRA_CPS234": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "AU_ISM": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "NZ_PRIVACY": {{ "alignment_score": <0-100>, "mapped_controls": [{{"ipp": "IPP X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "SG_PDPA": {{ "alignment_score": <0-100>, "mapped_controls": [{{"obligation": "Obligation X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "TH_PDPA": {{ "alignment_score": <0-100>, "mapped_controls": [{{"section": "Sec X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "ID_PDPA": {{ "alignment_score": <0-100>, "mapped_controls": [{{"section": "Sec X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "JP_APPI": {{ "alignment_score": <0-100>, "mapped_controls": [{{"section": "Sec X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "CN_PIPL": {{ "alignment_score": <0-100>, "mapped_controls": [{{"article": "Art. X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "MY_PDPA": {{ "alignment_score": <0-100>, "mapped_controls": [{{"section": "Sec X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "PH_PDPA": {{ "alignment_score": <0-100>, "mapped_controls": [{{"section": "Sec X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "IN_IT_ACT": {{ "alignment_score": <0-100>, "mapped_controls": [{{"section": "Sec X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "IN_SPDI": {{ "alignment_score": <0-100>, "mapped_controls": [{{"rule": "Rule X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "CERT_IN": {{ "alignment_score": <0-100>, "mapped_controls": [{{"directive": "Directive X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "HK_PDPO": {{ "alignment_score": <0-100>, "mapped_controls": [{{"dp": "DP X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "KR_PIPA": {{ "alignment_score": <0-100>, "mapped_controls": [{{"article": "Art. X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "IN_DPDP": {{ "alignment_score": <0-100>, "standard_version": "2023", "mapped_controls": [{{"section": "Sec X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "IN_NCIIPC": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "IN_NIST": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "IN_MHA_CYBER": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "IN_MCA": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "IN_RBI": {{ "alignment_score": <0-100>, "mapped_controls": [{{"circular": "Circular X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "IN_SEBI": {{ "alignment_score": <0-100>, "mapped_controls": [{{"circular": "Circular X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "IN_TRAI": {{ "alignment_score": <0-100>, "mapped_controls": [{{"regulation": "Reg X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "IN_UIDAI": {{ "alignment_score": <0-100>, "mapped_controls": [{{"circular": "Circular X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "IN_IRDAI": {{ "alignment_score": <0-100>, "mapped_controls": [{{"circular": "Circular X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "SAMA": {{ "alignment_score": <0-100>, "standard_version": "2023", "mapped_controls": [{{"control_id": "X.X.X", "domain": "...", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "UAE_PDPL": {{ "alignment_score": <0-100>, "standard_version": "2023", "mapped_controls": [{{"article": "Art. X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "UAE_NESA": {{ "alignment_score": <0-100>, "standard_version": "IAS", "mapped_controls": [{{"control_id": "X-X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "UAE_IAR": {{ "alignment_score": <0-100>, "standard_version": "2020", "mapped_controls": [{{"control_id": "X.X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "QA_QCB": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "X.X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "BH_PDPL": {{ "alignment_score": <0-100>, "mapped_controls": [{{"article": "Art. X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "OM_PDPL": {{ "alignment_score": <0-100>, "mapped_controls": [{{"article": "Art. X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "KW_CSF": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "X.X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "ZA_POPIA": {{ "alignment_score": <0-100>, "mapped_controls": [{{"condition": "Condition X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "NG_DPA": {{ "alignment_score": <0-100>, "mapped_controls": [{{"section": "Sec X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "KE_DPA": {{ "alignment_score": <0-100>, "mapped_controls": [{{"section": "Sec X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "EG_DPL": {{ "alignment_score": <0-100>, "mapped_controls": [{{"article": "Art. X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "BR_LGPD": {{ "alignment_score": <0-100>, "mapped_controls": [{{"article": "Art. X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "MX_LFPDPPP": {{ "alignment_score": <0-100>, "mapped_controls": [{{"principle": "Principle X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "AR_PDPA": {{ "alignment_score": <0-100>, "mapped_controls": [{{"article": "Art. X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "CL_LAW": {{ "alignment_score": <0-100>, "mapped_controls": [{{"article": "Art. X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "CO_LAW": {{ "alignment_score": <0-100>, "mapped_controls": [{{"article": "Art. X", "requirement": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "CIS": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "CIS X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "PCIDSS": {{ "alignment_score": <0-100>, "standard_version": "4.0", "mapped_controls": [{{"control_id": "Req X.X.X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "SWIFT_CSP": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "X.X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "SOC2": {{ "alignment_score": <0-100>, "mapped_controls": [{{"control_id": "CC x.x", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "BASEL": {{ "alignment_score": <0-100>, "mapped_controls": [{{"pillar": "Pillar X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "SOLVENCY_II": {{ "alignment_score": <0-100>, "mapped_controls": [{{"pillar": "Pillar X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }},
+  "MAR": {{ "alignment_score": <0-100>, "mapped_controls": [{{"article": "Art. X", "control_name": "...", "status": "met|partial|not_met", "notes": "..."}}] }}
 }}
 
 Return ONLY the JSON object."""
