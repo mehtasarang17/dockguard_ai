@@ -647,6 +647,18 @@ async function loadAnalysis(docId, batchId) {
     const batchTabsEl = document.getElementById('batchDocTabs');
     const saveAllBtn = document.getElementById('saveAllBtn');
 
+    // Immediately reset the save button to avoid stale "Saved" state from a
+    // previously viewed document while the new analysis data is still loading.
+    const saveBtn = document.getElementById('saveDocBtn');
+    saveBtn.innerHTML = '<i class="fas fa-bookmark"></i> Save to Knowledge Base';
+    saveBtn.disabled = false;
+    saveBtn.style.display = 'none';
+
+    // Same for batch save button
+    saveAllBtn.innerHTML = '<i class="fas fa-bookmark"></i> Save All to Knowledge Base';
+    saveAllBtn.disabled = false;
+    saveAllBtn.style.display = 'none';
+
     // Clean up any leftover cumulative analysis view from a previous batch
     const oldCumView = document.getElementById('cumulativeAnalysisView');
     if (oldCumView) oldCumView.remove();
@@ -704,7 +716,9 @@ async function loadAnalysis(docId, batchId) {
                 tabsContainer.appendChild(cumTab);
 
                 // === Individual document tabs ===
+                let savedCount = 0;
                 bDocs.forEach(bd => {
+                    if (bd.is_saved) savedCount++;
                     const tab = document.createElement('div');
                     tab.className = `bdt-tab${bd.id === docId ? ' active' : ''}`;
                     const score = bd.analysis?.overall_score || '—';
@@ -721,6 +735,16 @@ async function loadAnalysis(docId, batchId) {
                     });
                     tabsContainer.appendChild(tab);
                 });
+
+                // Update saveAllBtn based on actual saved status
+                if (savedCount === bDocs.length) {
+                    saveAllBtn.innerHTML = `<i class="fas fa-check"></i> All ${savedCount} Saved`;
+                    saveAllBtn.disabled = true;
+                } else {
+                    saveAllBtn.innerHTML = '<i class="fas fa-bookmark"></i> Save All to Knowledge Base';
+                    saveAllBtn.disabled = false;
+                }
+
             } catch (e) {
                 console.error('Failed to load batch tabs:', e);
             }
@@ -728,13 +752,13 @@ async function loadAnalysis(docId, batchId) {
             // Show Save All, hide single Save
             saveAllBtn.style.display = '';
             saveAllBtn.onclick = () => saveAllBatchDocuments(batchId);
-            document.getElementById('saveDocBtn').style.display = 'none';
+            saveBtn.style.display = 'none';
         } else {
             batchTabsEl.style.display = 'none';
             saveAllBtn.style.display = 'none';
 
-            // Save button (single doc mode)
-            const saveBtn = document.getElementById('saveDocBtn');
+            // Save button (single doc mode) — update from API data
+            // (saveBtn was already reset at the top of loadAnalysis)
             if (doc.is_saved) {
                 saveBtn.innerHTML = '<i class="fas fa-check"></i> Saved';
                 saveBtn.disabled = true;
@@ -836,6 +860,9 @@ async function loadAnalysis(docId, batchId) {
         console.error('Load analysis error', e);
         content.style.display = 'none';
         empty.style.display = '';
+        // Reset save button so stale state from a previous doc doesn't persist
+        saveBtn.style.display = 'none';
+        saveAllBtn.style.display = 'none';
     }
 }
 
@@ -1773,7 +1800,7 @@ async function loadChatHistory() {
         const msgs = data.messages || [];
 
         if (msgs.length) {
-            messagesEl.innerHTML = msgs.map(m => chatMsgHtml(m.role, m.message, m.tokens_used)).join('');
+            messagesEl.innerHTML = msgs.map(m => chatMsgHtml(m.role, m.message, m.tokens_used, null)).join('');
         } else {
             messagesEl.innerHTML = `
                 <div class="chat-welcome">
@@ -1909,7 +1936,7 @@ function formatChatMessage(text) {
     return result;
 }
 
-function chatMsgHtml(role, message, tokensUsed = 0, extraHtml = '') {
+function chatMsgHtml(role, message, tokensUsed = 0, confidenceScore = null, extraHtml = '') {
     const icon = role === 'user' ? 'fa-user' : 'fa-robot';
     const formatted = role === 'assistant' ? formatChatMessage(message) : escHtml(message).replace(/\n/g, '<br>');
 
@@ -1918,13 +1945,21 @@ function chatMsgHtml(role, message, tokensUsed = 0, extraHtml = '') {
         tokensHtml = `<div class="chat-tokens-badge"><i class="fas fa-coins"></i> ${tokensUsed.toLocaleString()} tokens</div>`;
     }
 
+    let confidenceHtml = '';
+    if (role === 'assistant' && confidenceScore != null) {
+        confidenceHtml = `<div class="chat-confidence-badge" title="AI Confidence Score"><i class="fas fa-check-circle"></i> ${confidenceScore}% Confidence</div>`;
+    }
+
     return `
         <div class="chat-msg ${role}">
             <div class="chat-avatar"><i class="fas ${icon}"></i></div>
             <div class="chat-bubble">
                 ${extraHtml}
                 ${formatted}
-                ${tokensHtml}
+                <div class="chat-badges-row">
+                    ${tokensHtml}
+                    ${confidenceHtml}
+                </div>
             </div>
         </div>
     `;
@@ -2223,7 +2258,7 @@ async function sendChat() {
         const pillName = document.getElementById('chatFileName').textContent;
         fileChipHtml = `<div class="chat-msg-file-chip"><i class="fas fa-file-lines"></i> ${escHtml(pillName)}</div>`;
     }
-    messagesEl.innerHTML += chatMsgHtml('user', message, 0, fileChipHtml);
+    messagesEl.innerHTML += chatMsgHtml('user', message, 0, null, fileChipHtml);
     input.value = '';
 
     // Typing indicator
@@ -2249,7 +2284,7 @@ async function sendChat() {
         document.getElementById(typingId)?.remove();
 
         if (data.answer) {
-            messagesEl.innerHTML += chatMsgHtml('assistant', data.answer, data.tokens_used);
+            messagesEl.innerHTML += chatMsgHtml('assistant', data.answer, data.tokens_used, data.confidence_score);
 
             // Update session tokens
             if (data.tokens_used) {
@@ -2288,14 +2323,14 @@ async function sendChat() {
                 `;
             }
         } else if (data.error) {
-            messagesEl.innerHTML += chatMsgHtml('assistant', 'Error: ' + data.error);
+            messagesEl.innerHTML += chatMsgHtml('assistant', 'Error: ' + data.error, 0, null);
         } else {
-            messagesEl.innerHTML += chatMsgHtml('assistant', 'Sorry, I could not process your request.');
+            messagesEl.innerHTML += chatMsgHtml('assistant', 'Sorry, I could not process your request.', 0, null);
         }
         messagesEl.scrollTop = messagesEl.scrollHeight;
     } catch (e) {
         document.getElementById(typingId)?.remove();
-        messagesEl.innerHTML += chatMsgHtml('assistant', 'Error: ' + e.message);
+        messagesEl.innerHTML += chatMsgHtml('assistant', 'Error: ' + e.message, 0, null);
         messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 }

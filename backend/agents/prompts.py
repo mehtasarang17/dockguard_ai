@@ -821,7 +821,13 @@ Instructions:
 - Cite sources naturally at the end of relevant sentences
 - If information comes from multiple policies, compare and contrast them
 
-Provide your answer with citations:"""
+Output your response STRICTLY as a JSON object with the following structure:
+{{
+  "answer": "<Your detailed answer with citations>",
+  "confidence_score": <An integer from 1 to 100 representing how confident you are in this answer based exclusively on the provided context>
+}}
+
+Return ONLY the JSON object, with no markdown formatting or extra text."""
 
 
 def extract_questions_prompt(text: str) -> str:

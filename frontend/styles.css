@@ -2465,6 +2465,14 @@ ol.chat-list li::marker {
     vertical-align: middle;
 }
 
+.chat-badges-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+    margin-top: 0.5rem;
+}
+
 .chat-tokens-badge {
     display: inline-flex;
     align-items: center;
@@ -2477,8 +2485,20 @@ ol.chat-list li::marker {
     /* orange text */
     font-size: .75rem;
     font-weight: 600;
-    margin-top: 0.5rem;
-    vertical-align: middle;
+}
+
+.chat-confidence-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: .3rem;
+    padding: .15rem .5rem;
+    border-radius: 12px;
+    background: rgba(16, 185, 129, 0.15);
+    /* green tinted */
+    color: #10b981;
+    /* green text */
+    font-size: .75rem;
+    font-weight: 600;
 }
 
 .citation-badge i {

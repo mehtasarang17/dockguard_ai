@@ -1247,16 +1247,44 @@ CITATION RULES AND INSTRUCTIONS (FOLLOW STRICTLY):
 6. Be concise but thorough. Use bullet points for lists.
 7. DO NOT use Markdown numbered lists (like "1. ", "2. ") for the questions. This breaks the UI formatting. Instead, use bold headers like **Q1:**, **Q2:**, etc.
 
-Answer:"""
+Output your response STRICTLY as a JSON object with the following structure:
+{{
+  "answer": "<Your detailed answer with citations>",
+  "confidence_score": <An integer from 1 to 100 representing how confident you are in this answer based exclusively on the KB context>
+}}
+
+Return ONLY the JSON object, with no markdown formatting or extra text."""
             else:
                 prompt = knowledge_chat_prompt(hits, history_dicts, message)
-            answer = chat_llm.invoke(prompt)
+            raw_answer = chat_llm.invoke(prompt)
+
+            # --- Parse JSON response ---
+            import json
+            
+            answer_text = raw_answer
+            confidence_score = None
+            try:
+                # Clean up if enclosed in markdown
+                cleaned = raw_answer.strip()
+                if "```json" in cleaned:
+                    cleaned = cleaned.split("```json")[1].split("```")[0].strip()
+                elif "```" in cleaned:
+                    cleaned = cleaned.split("```")[1].split("```")[0].strip()
+                
+                parsed = json.loads(cleaned)
+                if isinstance(parsed, dict) and "answer" in parsed:
+                    answer_text = parsed["answer"]
+                    confidence_score = parsed.get("confidence_score")
+            except Exception as e:
+                print(f"Failed to parse LLM JSON response: {e}")
+                # Fallback to returning raw text without confidence score
+                pass
             
             # Calculate total tokens used across the rewrite + final answer
             used_tokens = chat_llm.total_input_tokens + chat_llm.total_output_tokens
 
             # Save assistant message
-            assistant_msg = ChatHistory(document_id=None, role='assistant', message=answer, tokens_used=used_tokens)
+            assistant_msg = ChatHistory(document_id=None, role='assistant', message=answer_text, tokens_used=used_tokens)
             db.add(assistant_msg)
             db.commit()
             
@@ -1270,9 +1298,10 @@ Answer:"""
                     cited_docs[h['filename']] = True
 
             return jsonify({
-                'answer': answer,
+                'answer': answer_text,
                 'citations': list(cited_docs.keys()),
                 'tokens_used': used_tokens,
+                'confidence_score': confidence_score,
                 'has_uploaded_file': bool(session_id),
                 'session_id': session_id,
             })
