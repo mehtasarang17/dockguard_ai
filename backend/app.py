@@ -4,14 +4,14 @@ import time
 import threading
 from datetime import datetime
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 from sqlalchemy.orm import joinedload
 from sqlalchemy.orm.attributes import flag_modified
 from werkzeug.utils import secure_filename
 
 from config import Config
-from models import init_db, get_db, SessionLocal, Document, Analysis, ChatHistory, SystemSettings, FrameworkStandard, BatchAnalysis, AuthorizedApp
+from models import init_db, get_db, SessionLocal, Document, Analysis, ChatHistory, SystemSettings, FrameworkStandard, BatchAnalysis, AuthorizedApp, Tenant
 from extractor import extract_text
 from agents.orchestrator import Orchestrator
 from agents.bedrock_client import BedrockClient
@@ -25,22 +25,42 @@ import uuid
 # ---- App Setup --------------------------------------------------------------
 app = Flask(__name__)
 app.config.from_object(Config)
-CORS(app)
+CORS(app, origins=os.environ.get('CORS_ORIGINS', 'http://localhost:3001').split(','))
 
 os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
 init_db()
 
-# Initialize default authorized app if none exist
+# Initialize default tenant + admin app if none exist
 def init_default_app():
     try:
         with SessionLocal() as db:
+            # Ensure a default tenant exists
+            tenant = db.query(Tenant).filter_by(slug='default').first()
+            if not tenant:
+                tenant = Tenant(name='Default', slug='default', is_active=True)
+                db.add(tenant)
+                db.flush()  # get tenant.id before committing
+                print(f"🏢 Created default tenant (id={tenant.id})")
+
+            # Ensure at least one admin API key exists
             count = db.query(AuthorizedApp).count()
             if count == 0:
                 new_key = f"sk-{uuid.uuid4()}"
-                app_entry = AuthorizedApp(name="Default Admin", api_key=new_key, is_active=True)
+                app_entry = AuthorizedApp(
+                    tenant_id=tenant.id,
+                    name='Default Admin',
+                    api_key=new_key,
+                    is_active=True,
+                    is_admin=True,
+                )
                 db.add(app_entry)
-                db.commit()
-                print(f"🔑 Created default authorized app with key: {new_key}")
+                print(f"🔑 Created default admin app with key: {new_key}")
+            else:
+                # Migrate: attach existing keys to the default tenant if they have no tenant
+                db.query(AuthorizedApp).filter(AuthorizedApp.tenant_id == None).update(
+                    {'tenant_id': tenant.id, 'is_admin': True}
+                )
+            db.commit()
     except Exception as e:
         print(f"Error initializing default app: {e}")
 
@@ -50,60 +70,68 @@ orchestrator = Orchestrator()
 chat_llm = get_llm_client()
 
 # ---- API Key Authentication Middleware ---------------------------------------
-# Routes that do NOT require API key authentication
-AUTH_EXEMPT_ROUTES = {
-    'health',
-}
+AUTH_EXEMPT_ROUTES = {'health'}
 
 @app.before_request
 def require_api_key():
-    """Enforce API key authentication on all /api/ routes."""
-    # Skip non-API routes
+    """Enforce API key auth on all /api/ routes; populate g.tenant_id & g.is_admin."""
     if not request.path.startswith('/api/'):
         return None
-
-    # Skip exempted endpoints (health, app management — only reachable via frontend)
     if request.endpoint in AUTH_EXEMPT_ROUTES:
         return None
 
-    # Allow frontend proxy requests with valid internal token
-    internal_token = request.headers.get('X-Internal-Token', '')
-    if internal_token and internal_token == Config.INTERNAL_TOKEN:
-        return None
-
-    # Check for API key in X-API-Key header or Authorization: Bearer
+    # First: check for an explicit API key (X-API-Key header or Authorization Bearer).
+    # This MUST take priority over X-Internal-Token so that tenant-scoped keys work
+    # correctly even when Nginx injects the internal token on all proxied requests.
     api_key = request.headers.get('X-API-Key', '')
     if not api_key:
         auth_header = request.headers.get('Authorization', '')
         if auth_header.startswith('Bearer '):
             api_key = auth_header[7:]
 
-    if not api_key:
-        return jsonify({
-            'error': 'Authentication required',
-            'message': 'Please provide an API key via the X-API-Key header or Authorization: Bearer header.'
-        }), 401
+    if api_key:
+        db = get_db()
+        try:
+            app_entry = db.query(AuthorizedApp).filter_by(api_key=api_key).first()
+            if not app_entry:
+                return jsonify({'error': 'Invalid API key', 'message': 'API key not recognised.'}), 401
+            if not app_entry.is_active:
+                return jsonify({
+                    'error': 'Application disabled',
+                    'message': 'This application has been disabled.',
+                }), 403
+            # Record last-used timestamp
+            app_entry.last_used = datetime.utcnow()
+            db.commit()
+            g.tenant_id = app_entry.tenant_id
+            g.is_admin = bool(app_entry.is_admin)
+            return None
+        finally:
+            db.close()
 
-    # Validate against authorized apps
-    db = get_db()
-    try:
-        app_entry = db.query(AuthorizedApp).filter_by(api_key=api_key).first()
-        if not app_entry:
-            return jsonify({
-                'error': 'Invalid API key',
-                'message': 'The provided API key is not valid.'
-            }), 401
-        if not app_entry.is_active:
-            return jsonify({
-                'error': 'Application disabled',
-                'message': f'The application "{app_entry.name}" has been disabled by the administrator.'
-            }), 403
-        # Track last used
-        app_entry.last_used = datetime.utcnow()
-        db.commit()
-    finally:
-        db.close()
+    # Fallback: frontend proxy via Nginx — assign to default tenant with admin rights.
+    # Only reached when no explicit API key is present.
+    internal_token = request.headers.get('X-Internal-Token', '')
+    if internal_token and internal_token == Config.INTERNAL_TOKEN:
+        g.tenant_id = 1
+        g.is_admin = True
+        return None
 
+    return jsonify({
+        'error': 'Authentication required',
+        'message': 'Please provide an API key via X-API-Key or Authorization: Bearer.',
+    }), 401
+
+
+def _tenant_id() -> int:
+    """Return the tenant_id for the current request."""
+    return getattr(g, 'tenant_id', 1)
+
+
+def _require_admin():
+    """Return a 403 response if the caller is not an admin, else None."""
+    if not getattr(g, 'is_admin', False):
+        return jsonify({'error': 'Admin access required'}), 403
     return None
 
 
@@ -430,12 +458,15 @@ def upload_document():
     safe = secure_filename(original)
     ts = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
     unique = f"{ts}_{safe}"
-    path = os.path.join(Config.UPLOAD_FOLDER, unique)
+    tenant_dir = os.path.join(Config.UPLOAD_FOLDER, str(_tenant_id()))
+    os.makedirs(tenant_dir, exist_ok=True)
+    path = os.path.join(tenant_dir, unique)
     file.save(path)
 
     db = get_db()
     try:
         doc = Document(
+            tenant_id=_tenant_id(),
             filename=unique,
             original_filename=original,
             file_path=path,
@@ -462,8 +493,8 @@ def get_history():
     """Returns combined history of all single and batch analyses, sorted by date."""
     db = get_db()
     try:
-        docs = db.query(Document).join(Analysis).all()
-        batches = db.query(BatchAnalysis).all()
+        docs = db.query(Document).join(Analysis).filter(Document.tenant_id == _tenant_id()).all()
+        batches = db.query(BatchAnalysis).filter(BatchAnalysis.tenant_id == _tenant_id()).all()
         
         items = []
         for doc in docs:
@@ -506,7 +537,7 @@ def get_history():
 def list_documents():
     db = get_db()
     try:
-        docs = db.query(Document).order_by(Document.upload_date.desc()).all()
+        docs = db.query(Document).filter(Document.tenant_id == _tenant_id()).order_by(Document.upload_date.desc()).all()
         return jsonify({'documents': [d.to_dict() for d in docs]})
     finally:
         db.close()
@@ -516,7 +547,7 @@ def list_documents():
 def get_document(doc_id):
     db = get_db()
     try:
-        doc = db.query(Document).filter(Document.id == doc_id).first()
+        doc = db.query(Document).filter(Document.id == doc_id, Document.tenant_id == _tenant_id()).first()
         if not doc:
             return jsonify({'error': 'Document not found'}), 404
         resp = {'document': doc.to_dict(), 'analysis': None}
@@ -531,12 +562,11 @@ def get_document(doc_id):
 def delete_document(doc_id):
     db = get_db()
     try:
-        doc = db.query(Document).filter(Document.id == doc_id).first()
+        doc = db.query(Document).filter(Document.id == doc_id, Document.tenant_id == _tenant_id()).first()
         if not doc:
             return jsonify({'error': 'Document not found'}), 404
-        # Always remove from vector store (handles edge cases)
         try:
-            vector_store.remove_document(doc_id)
+            vector_store.remove_document(_tenant_id(), doc_id)
         except Exception as e:
             print(f"Warning: vector store cleanup for doc {doc_id}: {e}")
         if os.path.exists(doc.file_path):
@@ -552,7 +582,7 @@ def rename_document(doc_id):
     """Rename a document."""
     db = get_db()
     try:
-        doc = db.query(Document).filter(Document.id == doc_id).first()
+        doc = db.query(Document).filter(Document.id == doc_id, Document.tenant_id == _tenant_id()).first()
         if not doc:
             return jsonify({'error': 'Document not found'}), 404
         new_name = (request.get_json(force=True) or {}).get('filename', '').strip()
@@ -570,7 +600,7 @@ def save_document(doc_id):
     """Save document to knowledge base: mark as saved + chunk & embed into vector store."""
     db = get_db()
     try:
-        doc = db.query(Document).filter(Document.id == doc_id).first()
+        doc = db.query(Document).filter(Document.id == doc_id, Document.tenant_id == _tenant_id()).first()
         if not doc:
             return jsonify({'error': 'Document not found'}), 404
 
@@ -587,7 +617,7 @@ def save_document(doc_id):
         # Extract text and add to vector store
         text = extract_text(doc.file_path)
         chunk_count = vector_store.add_document(
-            doc_id, doc.original_filename, text,
+            _tenant_id(), doc_id, doc.original_filename, text,
             chunk_size=chunk_size, overlap=overlap,
         )
 
@@ -614,7 +644,7 @@ def save_document(doc_id):
 def get_analysis(doc_id):
     db = get_db()
     try:
-        doc = db.query(Document).filter(Document.id == doc_id).first()
+        doc = db.query(Document).filter(Document.id == doc_id, Document.tenant_id == _tenant_id()).first()
         if not doc:
             return jsonify({'error': 'Document not found'}), 404
         if not doc.analysis:
@@ -630,7 +660,7 @@ def check_frameworks(doc_id):
     """Run framework comparison for user-selected frameworks."""
     db = get_db()
     try:
-        doc = db.query(Document).filter(Document.id == doc_id).first()
+        doc = db.query(Document).filter(Document.id == doc_id, Document.tenant_id == _tenant_id()).first()
         if not doc:
             return jsonify({'error': 'Document not found'}), 404
         if not doc.analysis:
@@ -650,7 +680,7 @@ def check_frameworks(doc_id):
 
         # Get document text
         text = extract_text(doc.file_path)
-        fw_uploaded = framework_store.get_uploaded_frameworks()
+        fw_uploaded = framework_store.get_uploaded_frameworks(_tenant_id())
 
         llm = get_llm_client()
         mappings = dict(doc.analysis.framework_mappings or {})
@@ -658,8 +688,7 @@ def check_frameworks(doc_id):
         for key in selected:
             try:
                 if fw_uploaded.get(key, False):
-                    # RAG comparison with uploaded standard
-                    hits = framework_store.search_framework(key, text[:2000], top_k=8)
+                    hits = framework_store.search_framework(_tenant_id(), key, text[:2000], top_k=8)
                     if hits:
                         prompt = framework_comparison_prompt(text, doc.document_type, key, hits)
                     else:
@@ -729,10 +758,13 @@ def upload_batch():
             safe = secure_filename(original)
             ts = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
             unique = f"{ts}_{safe}"
-            path = os.path.join(Config.UPLOAD_FOLDER, unique)
+            tenant_dir = os.path.join(Config.UPLOAD_FOLDER, str(_tenant_id()))
+            os.makedirs(tenant_dir, exist_ok=True)
+            path = os.path.join(tenant_dir, unique)
             file.save(path)
 
             doc = Document(
+                tenant_id=_tenant_id(),
                 filename=unique,
                 original_filename=original,
                 file_path=path,
@@ -753,6 +785,7 @@ def upload_batch():
 
         # Create batch analysis record
         batch = BatchAnalysis(
+            tenant_id=_tenant_id(),
             document_ids=[d['id'] for d in documents_info],
             document_type=document_type,
             status='processing',
@@ -790,7 +823,7 @@ def get_batch_analysis(batch_id):
     """Get batch analysis results including cross-doc synthesis."""
     db = get_db()
     try:
-        batch = db.query(BatchAnalysis).filter(BatchAnalysis.id == batch_id).first()
+        batch = db.query(BatchAnalysis).filter(BatchAnalysis.id == batch_id, BatchAnalysis.tenant_id == _tenant_id()).first()
         if not batch:
             return jsonify({'error': 'Batch not found'}), 404
 
@@ -817,7 +850,7 @@ def delete_batch_analysis(batch_id):
     """Delete a batch analysis and all its associated documents."""
     db = get_db()
     try:
-        batch = db.query(BatchAnalysis).filter(BatchAnalysis.id == batch_id).first()
+        batch = db.query(BatchAnalysis).filter(BatchAnalysis.id == batch_id, BatchAnalysis.tenant_id == _tenant_id()).first()
         if not batch:
             return jsonify({'error': 'Batch not found'}), 404
             
@@ -825,7 +858,7 @@ def delete_batch_analysis(batch_id):
             doc = db.query(Document).filter(Document.id == doc_id).first()
             if doc:
                 try:
-                    vector_store.remove_document(doc_id)
+                    vector_store.remove_document(_tenant_id(), doc_id)
                 except Exception:
                     pass
                 if os.path.exists(doc.file_path):
@@ -847,7 +880,7 @@ def save_batch_documents(batch_id):
     """Save all documents in a batch to the knowledge base."""
     db = get_db()
     try:
-        batch = db.query(BatchAnalysis).filter(BatchAnalysis.id == batch_id).first()
+        batch = db.query(BatchAnalysis).filter(BatchAnalysis.id == batch_id, BatchAnalysis.tenant_id == _tenant_id()).first()
         if not batch:
             return jsonify({'error': 'Batch not found'}), 404
 
@@ -866,7 +899,7 @@ def save_batch_documents(batch_id):
             try:
                 text = extract_text(doc.file_path)
                 chunk_count = vector_store.add_document(
-                    doc.id, doc.original_filename, text,
+                    _tenant_id(), doc.id, doc.original_filename, text,
                     chunk_size=chunk_size, overlap=overlap,
                 )
                 doc.is_saved = True
@@ -898,6 +931,7 @@ def get_trends():
         analyses = (
             db.query(Analysis)
             .join(Document)
+            .filter(Document.tenant_id == _tenant_id())
             .order_by(Document.upload_date.asc())
             .all()
         )
@@ -927,7 +961,7 @@ def get_stats():
         lifetime_tokens = int(setting.value) if setting else 0
         
         # Calculate total tokens used explicitly in chat
-        chat_tokens_query = db.query(func.sum(ChatHistory.tokens_used)).scalar()
+        chat_tokens_query = db.query(func.sum(ChatHistory.tokens_used)).filter(ChatHistory.tenant_id == _tenant_id()).scalar()
         total_chat_tokens = int(chat_tokens_query) if chat_tokens_query else 0
         
         return jsonify({
@@ -948,7 +982,7 @@ def reset_tokens():
             setting.value = "0"
             
         # Reset all past chat history tokens to 0 to prevent sum rebuilding
-        db.query(ChatHistory).update({ChatHistory.tokens_used: 0})
+        db.query(ChatHistory).filter(ChatHistory.tenant_id == _tenant_id()).update({ChatHistory.tokens_used: 0})
         
         db.commit()
         return jsonify({'status': 'success', 'message': 'Token counts reset to 0'})
@@ -1171,7 +1205,7 @@ def chat():
                     if len(hits) >= 20:
                         break
                     
-                    q_hits = vector_store.search(q, top_k=2)
+                    q_hits = vector_store.search(_tenant_id(), q, top_k=2)
                     for h in q_hits:
                         key = (h.get('doc_id'), h.get('chunk_index'))
                         if key not in seen_chunks and h.get('filename') and h['filename'] != 'unknown' and h.get('doc_id', -1) != -1:
@@ -1182,7 +1216,7 @@ def chat():
                 print(f"📎 File-upload KB search: {len(all_queries)} queries → {len(hits)} unique KB chunks")
             else:
                 # Normal KB search with user message
-                kb_hits = vector_store.search(search_query, top_k=8)
+                kb_hits = vector_store.search(_tenant_id(), search_query, top_k=8)
                 hits = [h for h in kb_hits if (
                     h.get('filename') and h['filename'] != 'unknown' and h.get('doc_id', -1) != -1
                 )]
@@ -1199,7 +1233,7 @@ def chat():
                 })
 
             # Save user message
-            user_msg = ChatHistory(document_id=None, role='user', message=message)
+            user_msg = ChatHistory(tenant_id=_tenant_id(), document_id=None, role='user', message=message)
             db.add(user_msg)
             db.commit()
 
@@ -1284,7 +1318,7 @@ Return ONLY the JSON object, with no markdown formatting or extra text."""
             used_tokens = chat_llm.total_input_tokens + chat_llm.total_output_tokens
 
             # Save assistant message
-            assistant_msg = ChatHistory(document_id=None, role='assistant', message=answer_text, tokens_used=used_tokens)
+            assistant_msg = ChatHistory(tenant_id=_tenant_id(), document_id=None, role='assistant', message=answer_text, tokens_used=used_tokens)
             db.add(assistant_msg)
             db.commit()
             
@@ -1321,7 +1355,7 @@ def process_batch_questions(filename: str, user_message: str):
 
     # 1. Retrieve full text of the file
     print(f"Retrieving text for {filename}...")
-    full_text = vector_store.get_document_text(filename)
+    full_text = vector_store.get_document_text(_tenant_id(), filename)
         
     # helper to save history
     def save_and_return(answer_text, citations_list, used_tokens=0):
@@ -1329,12 +1363,14 @@ def process_batch_questions(filename: str, user_message: str):
         with SessionLocal() as db:
             # User message
             db.add(ChatHistory(
+                tenant_id=_tenant_id(),
                 role='user',
                 message=user_message,
                 document_id=None
             ))
             # Assistant message
             db.add(ChatHistory(
+                tenant_id=_tenant_id(),
                 role='assistant',
                 message=answer_text,
                 document_id=None,
@@ -1399,7 +1435,7 @@ def process_batch_questions(filename: str, user_message: str):
     for i, q in enumerate(questions):
         print(f"Processing Q{i+1}: {q}")
         # Search: Increase top_k and EXCLUDE the source file to avoid self-referencing
-        hits = vector_store.search(q, top_k=10, filters={"filename_ne": filename})
+        hits = vector_store.search(_tenant_id(), q, top_k=10, filters={"filename_ne": filename})
         
         # Debug: Print sources to verify we are getting other files
         print(f"  -> Found {len(hits)} chunks. Sources: {[h['filename'] for h in hits]}")
@@ -1444,7 +1480,7 @@ def chat_history():
     try:
         msgs = (
             db.query(ChatHistory)
-            .filter(ChatHistory.document_id.is_(None))
+            .filter(ChatHistory.document_id.is_(None), ChatHistory.tenant_id == _tenant_id())
             .order_by(ChatHistory.timestamp.asc())
             .all()
         )
@@ -1458,7 +1494,10 @@ def clear_chat_history():
     """Clear global chat history."""
     db = get_db()
     try:
-        db.query(ChatHistory).filter(ChatHistory.document_id.is_(None)).delete()
+        db.query(ChatHistory).filter(
+            ChatHistory.document_id.is_(None),
+            ChatHistory.tenant_id == _tenant_id()
+        ).delete()
         db.commit()
         return jsonify({'message': 'Chat history cleared'})
     finally:
@@ -1468,7 +1507,7 @@ def clear_chat_history():
 @app.route('/api/kb/stats', methods=['GET'])
 def kb_stats():
     """Return knowledge base statistics."""
-    stats = vector_store.get_stats()
+    stats = vector_store.get_stats(_tenant_id())
     return jsonify(stats)
 
 
@@ -1503,12 +1542,15 @@ if _startup_state.get("status") == "running":
     _set_reindex_state(status="idle", message="Reset after restart", current_doc="")
 
 
-def _reindex_worker():
-    """Background worker: re-extract and re-index all saved documents."""
+def _reindex_worker(worker_tenant_id: int):
+    """Background worker: re-extract and re-index all saved documents for a tenant."""
     _reindex_cancel.clear()
     db = get_db()
     try:
-        docs = db.query(Document).filter(Document.is_saved == True).all()
+        docs = db.query(Document).filter(
+            Document.is_saved == True,
+            Document.tenant_id == worker_tenant_id
+        ).all()
         _set_reindex_state(total=len(docs), current=0)
 
         if not docs:
@@ -1531,7 +1573,7 @@ def _reindex_worker():
 
             try:
                 text = extract_text(doc.file_path)
-                vector_store.add_document(doc.id, doc.original_filename, text)
+                vector_store.add_document(worker_tenant_id, doc.id, doc.original_filename, text)
             except Exception as e:
                 print(f"   ⚠️  Failed to reindex doc {doc.id}: {e}")
 
@@ -1561,7 +1603,8 @@ def kb_reindex():
         return jsonify({"error": "Reindex already in progress"}), 409
 
     _set_reindex_state(status="running", current=0, total=0, current_doc="", message="Starting reindex…")
-    t = threading.Thread(target=_reindex_worker, daemon=True)
+    tid = _tenant_id()
+    t = threading.Thread(target=_reindex_worker, args=(tid,), daemon=True)
     t.start()
     return jsonify({"message": "Reindex started"}), 202
 
@@ -1584,7 +1627,9 @@ def list_frameworks():
     """List all uploaded framework standard documents, grouped by key."""
     db = get_db()
     try:
-        standards = db.query(FrameworkStandard).order_by(
+        standards = db.query(FrameworkStandard).filter(
+            FrameworkStandard.tenant_id == _tenant_id()
+        ).order_by(
             FrameworkStandard.framework_key, FrameworkStandard.uploaded_at.desc()
         ).all()
         grouped = {}
@@ -1598,7 +1643,7 @@ def list_frameworks():
 @app.route('/api/frameworks/status', methods=['GET'])
 def frameworks_status():
     """Quick check: which frameworks have at least one uploaded standard."""
-    return jsonify(framework_store.get_uploaded_frameworks())
+    return jsonify(framework_store.get_uploaded_frameworks(_tenant_id()))
 
 
 @app.route('/api/frameworks/upload', methods=['POST'])
@@ -1618,8 +1663,8 @@ def upload_framework():
         return jsonify({'error': 'Invalid file type'}), 400
 
     filename = secure_filename(file.filename)
-    # Store in sub-directory per framework key
-    fw_dir = os.path.join(FRAMEWORK_UPLOAD_DIR, fw_key)
+    # Store in sub-directory per tenant + framework key
+    fw_dir = os.path.join(Config.UPLOAD_FOLDER, str(_tenant_id()), 'frameworks', fw_key)
     os.makedirs(fw_dir, exist_ok=True)
     file_path = os.path.join(fw_dir, f"{version}_{filename}")
     file.save(file_path)
@@ -1627,7 +1672,7 @@ def upload_framework():
     # Extract text and index into ChromaDB
     try:
         text = extract_text(file_path)
-        chunk_count = framework_store.add_framework(fw_key, version, filename, text)
+        chunk_count = framework_store.add_framework(_tenant_id(), fw_key, version, filename, text)
     except Exception as e:
         return jsonify({'error': f'Failed to process file: {e}'}), 500
 
@@ -1635,6 +1680,7 @@ def upload_framework():
     db = get_db()
     try:
         record = FrameworkStandard(
+            tenant_id=_tenant_id(),
             framework_key=fw_key,
             version=version,
             filename=filename,
@@ -1653,12 +1699,15 @@ def delete_framework(fw_id):
     """Delete a specific framework version."""
     db = get_db()
     try:
-        record = db.query(FrameworkStandard).filter_by(id=fw_id).first()
+        record = db.query(FrameworkStandard).filter(
+            FrameworkStandard.id == fw_id,
+            FrameworkStandard.tenant_id == _tenant_id()
+        ).first()
         if not record:
             return jsonify({'error': 'Framework not found'}), 404
 
         # Remove from ChromaDB
-        framework_store.remove_framework(record.framework_key, record.version, record.filename)
+        framework_store.remove_framework(_tenant_id(), record.framework_key, record.version, record.filename)
 
         # Remove file
         try:
@@ -1704,14 +1753,16 @@ def refresh_api_key():
         db.close()
 
 
-# ---- Authorized Applications CRUD -------------------------------------------
+# ---- Authorized Applications CRUD (tenant-scoped) ---------------------------
 
 @app.route('/api/system/apps', methods=['GET'])
 def list_apps():
-    """List all authorized applications."""
+    """List authorized applications for the current tenant."""
     db = get_db()
     try:
-        apps = db.query(AuthorizedApp).order_by(AuthorizedApp.created_at.desc()).all()
+        apps = db.query(AuthorizedApp).filter(
+            AuthorizedApp.tenant_id == _tenant_id()
+        ).order_by(AuthorizedApp.created_at.desc()).all()
         return jsonify({'apps': [a.to_dict() for a in apps]})
     finally:
         db.close()
@@ -1719,7 +1770,7 @@ def list_apps():
 
 @app.route('/api/system/apps', methods=['POST'])
 def create_app():
-    """Register a new authorized application."""
+    """Register a new authorized application for the current tenant."""
     data = request.get_json()
     name = (data or {}).get('name', '').strip()
     if not name:
@@ -1728,7 +1779,13 @@ def create_app():
     db = get_db()
     try:
         new_key = f"sk-{uuid.uuid4()}"
-        app_entry = AuthorizedApp(name=name, api_key=new_key, is_active=True)
+        app_entry = AuthorizedApp(
+            tenant_id=_tenant_id(),
+            name=name,
+            api_key=new_key,
+            is_active=True,
+            is_admin=False,
+        )
         db.add(app_entry)
         db.commit()
         db.refresh(app_entry)
@@ -1739,10 +1796,12 @@ def create_app():
 
 @app.route('/api/system/apps/<int:app_id>', methods=['DELETE'])
 def delete_app(app_id):
-    """Revoke and delete an authorized application."""
+    """Revoke and delete an authorized application (must belong to current tenant)."""
     db = get_db()
     try:
-        app_entry = db.query(AuthorizedApp).get(app_id)
+        app_entry = db.query(AuthorizedApp).filter(
+            AuthorizedApp.id == app_id, AuthorizedApp.tenant_id == _tenant_id()
+        ).first()
         if not app_entry:
             return jsonify({'error': 'Application not found'}), 404
         db.delete(app_entry)
@@ -1754,10 +1813,12 @@ def delete_app(app_id):
 
 @app.route('/api/system/apps/<int:app_id>/toggle', methods=['PATCH'])
 def toggle_app(app_id):
-    """Enable or disable an authorized application."""
+    """Enable or disable an authorized application (must belong to current tenant)."""
     db = get_db()
     try:
-        app_entry = db.query(AuthorizedApp).get(app_id)
+        app_entry = db.query(AuthorizedApp).filter(
+            AuthorizedApp.id == app_id, AuthorizedApp.tenant_id == _tenant_id()
+        ).first()
         if not app_entry:
             return jsonify({'error': 'Application not found'}), 404
         app_entry.is_active = not app_entry.is_active
@@ -1767,6 +1828,154 @@ def toggle_app(app_id):
         db.close()
 
 
+# ---- Admin: Tenant Management ------------------------------------------------
+# All routes below require is_admin = True on the caller's AuthorizedApp.
+
+@app.route('/api/admin/tenants', methods=['GET'])
+def admin_list_tenants():
+    """[Admin] List all tenants."""
+    err = _require_admin()
+    if err:
+        return err
+    db = get_db()
+    try:
+        tenants = db.query(Tenant).order_by(Tenant.created_at.desc()).all()
+        return jsonify({'tenants': [t.to_dict() for t in tenants]})
+    finally:
+        db.close()
+
+
+@app.route('/api/admin/tenants', methods=['POST'])
+def admin_create_tenant():
+    """[Admin] Create a new tenant and return its first API key."""
+    err = _require_admin()
+    if err:
+        return err
+    data = request.get_json(force=True) or {}
+    name = data.get('name', '').strip()
+    slug = data.get('slug', '').strip().lower().replace(' ', '-')
+    if not name or not slug:
+        return jsonify({'error': 'name and slug are required'}), 400
+
+    db = get_db()
+    try:
+        existing = db.query(Tenant).filter_by(slug=slug).first()
+        if existing:
+            return jsonify({'error': f'Slug "{slug}" is already taken'}), 409
+
+        tenant = Tenant(name=name, slug=slug, is_active=True)
+        db.add(tenant)
+        db.flush()
+
+        # Auto-create a first API key for this tenant
+        first_key = f"sk-{uuid.uuid4()}"
+        app_entry = AuthorizedApp(
+            tenant_id=tenant.id,
+            name=f"{name} — Default Key",
+            api_key=first_key,
+            is_active=True,
+            is_admin=False,
+        )
+        db.add(app_entry)
+        db.commit()
+        db.refresh(tenant)
+        return jsonify({
+            'tenant': tenant.to_dict(),
+            'first_api_key': first_key,
+        }), 201
+    finally:
+        db.close()
+
+
+@app.route('/api/admin/tenants/<int:tenant_id>', methods=['PATCH'])
+def admin_update_tenant(tenant_id):
+    """[Admin] Enable or disable a tenant."""
+    err = _require_admin()
+    if err:
+        return err
+    db = get_db()
+    try:
+        tenant = db.query(Tenant).filter_by(id=tenant_id).first()
+        if not tenant:
+            return jsonify({'error': 'Tenant not found'}), 404
+        data = request.get_json(force=True) or {}
+        if 'is_active' in data:
+            tenant.is_active = bool(data['is_active'])
+        if 'name' in data:
+            tenant.name = data['name'].strip()
+        db.commit()
+        return jsonify(tenant.to_dict())
+    finally:
+        db.close()
+
+
+@app.route('/api/admin/tenants/<int:tenant_id>/keys', methods=['GET'])
+def admin_list_tenant_keys(tenant_id):
+    """[Admin] List all API keys for a tenant."""
+    err = _require_admin()
+    if err:
+        return err
+    db = get_db()
+    try:
+        apps = db.query(AuthorizedApp).filter(
+            AuthorizedApp.tenant_id == tenant_id
+        ).order_by(AuthorizedApp.created_at.desc()).all()
+        return jsonify({'keys': [a.to_dict() for a in apps]})
+    finally:
+        db.close()
+
+
+@app.route('/api/admin/tenants/<int:tenant_id>/keys', methods=['POST'])
+def admin_create_tenant_key(tenant_id):
+    """[Admin] Create a new API key for a tenant."""
+    err = _require_admin()
+    if err:
+        return err
+    db = get_db()
+    try:
+        tenant = db.query(Tenant).filter_by(id=tenant_id).first()
+        if not tenant:
+            return jsonify({'error': 'Tenant not found'}), 404
+        data = request.get_json(force=True) or {}
+        name = data.get('name', 'API Key').strip()
+        is_admin_key = bool(data.get('is_admin', False))
+        new_key = f"sk-{uuid.uuid4()}"
+        app_entry = AuthorizedApp(
+            tenant_id=tenant_id,
+            name=name,
+            api_key=new_key,
+            is_active=True,
+            is_admin=is_admin_key,
+        )
+        db.add(app_entry)
+        db.commit()
+        db.refresh(app_entry)
+        return jsonify(app_entry.to_dict()), 201
+    finally:
+        db.close()
+
+
+@app.route('/api/admin/tenants/<int:tenant_id>/keys/<int:key_id>', methods=['DELETE'])
+def admin_revoke_tenant_key(tenant_id, key_id):
+    """[Admin] Revoke a specific API key for a tenant."""
+    err = _require_admin()
+    if err:
+        return err
+    db = get_db()
+    try:
+        app_entry = db.query(AuthorizedApp).filter(
+            AuthorizedApp.id == key_id, AuthorizedApp.tenant_id == tenant_id
+        ).first()
+        if not app_entry:
+            return jsonify({'error': 'Key not found'}), 404
+        db.delete(app_entry)
+        db.commit()
+        return jsonify({'message': f'Key "{app_entry.name}" revoked.'})
+    finally:
+        db.close()
+
+
 # ==============================================================================
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=Config.DEBUG)
+

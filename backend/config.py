@@ -38,7 +38,7 @@ class Config:
 
     # Flask
     DEBUG = os.environ.get('DEBUG', 'False').lower() in ('true', '1', 'yes')
-    SECRET_KEY = os.environ.get('SECRET_KEY', 'doc-analyzer-secret-key-change-me')
+    SECRET_KEY = os.environ.get('SECRET_KEY', 'CHANGE-ME-set-SECRET_KEY-in-env')
 
     # Internal token shared between Nginx proxy and Flask for frontend bypass
-    INTERNAL_TOKEN = os.environ.get('INTERNAL_TOKEN', 'docguard-internal-684d74ac-97a6')
+    INTERNAL_TOKEN = os.environ.get('INTERNAL_TOKEN', 'CHANGE-ME-set-INTERNAL_TOKEN-in-env')

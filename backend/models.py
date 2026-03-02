@@ -10,10 +10,37 @@ from config import Config
 Base = declarative_base()
 
 
+class Tenant(Base):
+    """A tenant is the top-level isolation unit. Every API key belongs to one tenant."""
+    __tablename__ = 'tenants'
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False)
+    slug = Column(String(100), unique=True, nullable=False)   # URL-safe identifier
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    authorized_apps = relationship("AuthorizedApp", back_populates="tenant", cascade="all, delete-orphan")
+    documents = relationship("Document", back_populates="tenant", cascade="all, delete-orphan")
+    batch_analyses = relationship("BatchAnalysis", back_populates="tenant", cascade="all, delete-orphan")
+    framework_standards = relationship("FrameworkStandard", back_populates="tenant", cascade="all, delete-orphan")
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'slug': self.slug,
+            'is_active': self.is_active,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class Document(Base):
     __tablename__ = 'documents'
 
     id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False, default=1)
     filename = Column(String(255), nullable=False)
     original_filename = Column(String(255), nullable=False)
     file_path = Column(String(512), nullable=False)
@@ -24,6 +51,7 @@ class Document(Base):
     is_saved = Column(Boolean, default=False)  # user explicitly saved for knowledge base
 
     # Relationships
+    tenant = relationship("Tenant", back_populates="documents")
     analysis = relationship("Analysis", back_populates="document", uselist=False, cascade="all, delete-orphan")
     chat_messages = relationship("ChatHistory", back_populates="document", cascade="all, delete-orphan")
 
@@ -148,6 +176,7 @@ class ChatHistory(Base):
     __tablename__ = 'chat_history'
 
     id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False, default=1)
     document_id = Column(Integer, ForeignKey('documents.id', ondelete='CASCADE'), nullable=True)
     role = Column(String(20), nullable=False)  # user, assistant
     message = Column(Text, nullable=False)
@@ -172,6 +201,7 @@ class BatchAnalysis(Base):
     __tablename__ = 'batch_analyses'
 
     id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False, default=1)
     document_ids = Column(JSON, nullable=False)         # list of document IDs in this batch
     document_type = Column(String(50), nullable=False)
     status = Column(String(50), default='processing')   # processing, completed, failed
@@ -190,6 +220,9 @@ class BatchAnalysis(Base):
     # --- Meta ---
     created_at = Column(DateTime, default=datetime.utcnow)
     processing_time = Column(Float)
+
+    # Relationship
+    tenant = relationship("Tenant", back_populates="batch_analyses")
 
     def to_dict(self):
         return {
@@ -217,37 +250,49 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
     Base.metadata.create_all(bind=engine)
-    # Migrate: make chat_history.document_id nullable if it isn't already
-    try:
-        with engine.connect() as conn:
-            conn.execute(text('ALTER TABLE chat_history ALTER COLUMN document_id DROP NOT NULL'))
-            conn.execute(text('ALTER TABLE chat_history ADD COLUMN tokens_used INTEGER DEFAULT 0'))
-            conn.commit()
-    except Exception:
-        pass  # already nullable or table doesn't exist yet
-    # Migrate: add score_rationale columns
-    try:
-        with engine.connect() as conn:
-            conn.execute(text('ALTER TABLE analyses ADD COLUMN score_rationale JSON DEFAULT \'[]\' '))
-            conn.execute(text('ALTER TABLE batch_analyses ADD COLUMN score_rationale JSON DEFAULT \'[]\' '))
-            conn.commit()
-    except Exception:
-        pass  # columns already exist
+
+    # ---- Migrations (safe, idempotent) ----------------------------------------
+    migrations = [
+        # Multi-tenancy: add tenant_id columns (default to tenant 1)
+        'ALTER TABLE documents ADD COLUMN tenant_id INTEGER NOT NULL DEFAULT 1',
+        'ALTER TABLE batch_analyses ADD COLUMN tenant_id INTEGER NOT NULL DEFAULT 1',
+        'ALTER TABLE chat_history ADD COLUMN tenant_id INTEGER NOT NULL DEFAULT 1',
+        'ALTER TABLE framework_standards ADD COLUMN tenant_id INTEGER NOT NULL DEFAULT 1',
+        # AuthorizedApp: add tenant_id + is_admin
+        'ALTER TABLE authorized_apps ADD COLUMN tenant_id INTEGER NOT NULL DEFAULT 1',
+        'ALTER TABLE authorized_apps ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT FALSE',
+        # Older app migrations
+        'ALTER TABLE chat_history ALTER COLUMN document_id DROP NOT NULL',
+        'ALTER TABLE chat_history ADD COLUMN tokens_used INTEGER DEFAULT 0',
+        'ALTER TABLE analyses ADD COLUMN score_rationale JSON DEFAULT \'[]\'',
+        'ALTER TABLE batch_analyses ADD COLUMN score_rationale JSON DEFAULT \'[]\'',
+    ]
+    with engine.connect() as conn:
+        for stmt in migrations:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+            except Exception:
+                conn.rollback()  # column / constraint already exists — safe to ignore
 
 
 class FrameworkStandard(Base):
-    """Tracks uploaded compliance framework standard documents."""
+    """Tracks uploaded compliance framework standard documents (per-tenant)."""
     __tablename__ = 'framework_standards'
 
     VALID_KEYS = ('CIS', 'GDPR', 'HIPAA', 'ISO27001', 'NIST', 'SOC2')
 
     id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False, default=1)
     framework_key = Column(String(20), nullable=False)   # e.g. ISO27001
     version = Column(String(100), nullable=False)         # e.g. "2022"
     filename = Column(String(255), nullable=False)        # original filename
     file_path = Column(String(500), nullable=False)       # server-side path
     chunk_count = Column(Integer, default=0)
     uploaded_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationship
+    tenant = relationship("Tenant", back_populates="framework_standards")
 
     def to_dict(self):
         return {
@@ -261,22 +306,29 @@ class FrameworkStandard(Base):
 
 
 class AuthorizedApp(Base):
-    """Registered application with its own API key for external access."""
+    """Registered application with its own API key. Belongs to a Tenant."""
     __tablename__ = 'authorized_apps'
 
     id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False, default=1)
     name = Column(String(100), nullable=False)
     api_key = Column(String(100), unique=True, nullable=False)
     is_active = Column(Boolean, default=True)
+    is_admin = Column(Boolean, default=False)  # admin keys can manage tenants
     created_at = Column(DateTime, default=datetime.utcnow)
     last_used = Column(DateTime, nullable=True)
+
+    # Relationship
+    tenant = relationship("Tenant", back_populates="authorized_apps")
 
     def to_dict(self):
         return {
             'id': self.id,
+            'tenant_id': self.tenant_id,
             'name': self.name,
             'api_key': self.api_key,
             'is_active': self.is_active,
+            'is_admin': self.is_admin,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'last_used': self.last_used.isoformat() if self.last_used else None,
         }

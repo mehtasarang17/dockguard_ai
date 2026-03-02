@@ -6,15 +6,15 @@ services:
     image: postgres:16
     container_name: doc-analyzer-db-v2
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: document_analyzer
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-document_analyzer}
     ports:
-      - "5435:5432"
+      - "5435:5432" # Dev only — remove in production
     volumes:
       - doc_analyzer_v2_db:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-document_analyzer}" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -28,7 +28,7 @@ services:
       dockerfile: Dockerfile
     container_name: doc-analyzer-backend-v2
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@doc-analyzer-db:5432/document_analyzer
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@doc-analyzer-db:5432/${POSTGRES_DB:-document_analyzer}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
@@ -39,11 +39,18 @@ services:
       UPLOAD_FOLDER: /app/uploads
       DEBUG: ${DEBUG:-False}
       ANONYMIZED_TELEMETRY: 'False'
-      INTERNAL_TOKEN: docguard-internal-684d74ac-97a6
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-change-me-in-env}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-env}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-mistral:7b}
     ports:
-      - "5002:5000"
+      - "5002:5000" # Dev only — remove in production
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:5000/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
     volumes:
       - doc_analyzer_v2_uploads:/app/uploads
       - doc_analyzer_v2_chromadb:/app/chromadb_data
@@ -62,7 +69,7 @@ services:
       dockerfile: Dockerfile
     container_name: doc-analyzer-frontend-v2
     environment:
-      INTERNAL_TOKEN: docguard-internal-684d74ac-97a6
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-change-me-in-env}
     ports:
       - "3001:80"
     depends_on:
@@ -76,7 +83,7 @@ services:
     image: ollama/ollama:latest
     container_name: doc-analyzer-ollama
     ports:
-      - "11434:11434"
+      - "11434:11434" # Dev only — remove in production
     volumes:
       - doc_analyzer_v2_ollama:/root/.ollama
     networks:

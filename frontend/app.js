@@ -2565,22 +2565,54 @@ function timeAgo(date) {
 
 // ---- API Documentation in Settings ----
 const API_ENDPOINTS = [
+    // Documents
     { method: 'GET', path: '/api/documents', desc: 'List all documents' },
     { method: 'GET', path: '/api/documents/:id', desc: 'Get a single document' },
-    { method: 'POST', path: '/api/upload', desc: 'Upload & analyze a single document' },
-    { method: 'POST', path: '/api/upload-batch', desc: 'Upload & analyze multiple documents' },
+    { method: 'POST', path: '/api/upload', desc: 'Upload & analyze a document' },
     { method: 'DELETE', path: '/api/documents/:id', desc: 'Delete a document' },
-    { method: 'GET', path: '/api/analysis/:id', desc: 'Get analysis results for a document' },
-    { method: 'POST', path: '/api/documents/:id/check-frameworks', desc: 'Run framework comparison' },
-    { method: 'GET', path: '/api/batch-analysis/:batchId', desc: 'Get batch analysis results' },
+    { method: 'PATCH', path: '/api/documents/:id/rename', desc: 'Rename a document' },
     { method: 'POST', path: '/api/documents/:id/save', desc: 'Save document to knowledge base' },
+    { method: 'GET', path: '/api/analysis/:id', desc: 'Get analysis results' },
+    { method: 'POST', path: '/api/analysis/:id/check-frameworks', desc: 'Run framework comparison' },
+    // Batch
+    { method: 'POST', path: '/api/upload-batch', desc: 'Upload & analyze multiple documents' },
+    { method: 'GET', path: '/api/batch-analysis/:batchId', desc: 'Get batch analysis results' },
+    { method: 'DELETE', path: '/api/batch-analysis/:batchId', desc: 'Delete a batch analysis' },
+    { method: 'POST', path: '/api/batch-analysis/:batchId/save-all', desc: 'Save all batch docs to KB' },
+    // Chat
     { method: 'POST', path: '/api/chat', desc: 'Send a knowledge chat message' },
     { method: 'GET', path: '/api/chat/history', desc: 'Get chat history' },
     { method: 'DELETE', path: '/api/chat/history', desc: 'Clear chat history' },
+    { method: 'POST', path: '/api/chat/upload', desc: 'Upload file for chat context' },
+    { method: 'POST', path: '/api/chat/save-file', desc: 'Save chat file to KB' },
+    { method: 'POST', path: '/api/chat/clear-file', desc: 'Remove attached chat file' },
+    { method: 'POST', path: '/api/chat/fill-document', desc: 'Generate a compliance document' },
+    { method: 'GET', path: '/api/chat/download/:filename', desc: 'Download generated file' },
+    // Knowledge Base
     { method: 'GET', path: '/api/kb/stats', desc: 'Knowledge base statistics' },
-    { method: 'GET', path: '/api/trends', desc: 'Historical score trends' },
+    { method: 'POST', path: '/api/kb/reindex', desc: 'Re-index knowledge base' },
+    { method: 'GET', path: '/api/kb/reindex/status', desc: 'Reindex progress' },
+    // Frameworks
     { method: 'GET', path: '/api/frameworks', desc: 'List uploaded framework standards' },
+    { method: 'GET', path: '/api/frameworks/status', desc: 'Framework upload status' },
     { method: 'POST', path: '/api/frameworks/upload', desc: 'Upload a framework standard' },
+    { method: 'DELETE', path: '/api/frameworks/:id', desc: 'Delete a framework standard' },
+    // History & Stats
+    { method: 'GET', path: '/api/history', desc: 'Analysis history (batches + singles)' },
+    { method: 'GET', path: '/api/trends', desc: 'Historical score trends' },
+    { method: 'GET', path: '/api/stats', desc: 'Token usage statistics' },
+    { method: 'POST', path: '/api/stats/reset', desc: 'Reset token counters' },
+    // System
+    { method: 'GET', path: '/api/system/apps', desc: 'List authorized applications' },
+    { method: 'POST', path: '/api/system/apps', desc: 'Create an application + key' },
+    { method: 'DELETE', path: '/api/system/apps/:id', desc: 'Delete an application' },
+    // Admin (requires is_admin)
+    { method: 'GET', path: '/api/admin/tenants', desc: 'List all tenants' },
+    { method: 'POST', path: '/api/admin/tenants', desc: 'Create a tenant' },
+    { method: 'PATCH', path: '/api/admin/tenants/:id', desc: 'Update tenant' },
+    { method: 'GET', path: '/api/admin/tenants/:id/keys', desc: 'List tenant API keys' },
+    { method: 'POST', path: '/api/admin/tenants/:id/keys', desc: 'Create tenant API key' },
+    { method: 'DELETE', path: '/api/admin/tenants/:id/keys/:keyId', desc: 'Revoke tenant API key' },
 ];
 
 function populateApiDocs() {
@@ -3008,6 +3040,7 @@ if (_origOpenSettings) {
     window._openSettingsOrig = _origOpenSettings;
 }
 
+
 function updateProviderBadge() {
     const el = document.getElementById('settingsCurrentProvider');
     if (!el) return;
@@ -3022,3 +3055,285 @@ openSettings = function (e) {
     origOpenFn(e);
     updateProviderBadge();
 };
+
+// ============================================================
+// SETTINGS — Tab Switching
+// ============================================================
+function switchSettingsTab(tab) {
+    ['keys', 'tenants', 'docs'].forEach(t => {
+        document.getElementById(`stab-${t}`)?.classList.remove('active');
+        const panel = document.getElementById(`spanel-${t}`);
+        if (panel) panel.style.display = 'none';
+    });
+    document.getElementById(`stab-${tab}`)?.classList.add('active');
+    const active = document.getElementById(`spanel-${tab}`);
+    if (active) active.style.display = '';
+
+    if (tab === 'tenants') loadTenants();
+}
+
+
+
+
+// ============================================================
+// SETTINGS — Tenant Management
+// ============================================================
+let _expandedTenants = {}; // track which tenant accordion cards are open
+
+async function loadTenants() {
+    const container = document.getElementById('tenantsList');
+    if (!container) return;
+    container.innerHTML = '<div style="text-align:center;padding:1.5rem;color:var(--text-muted)"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
+
+    try {
+        const res = await fetch(`${API_BASE}/api/admin/tenants`);
+        if (!res.ok) {
+            container.innerHTML = '<div class="apps-empty"><i class="fas fa-lock"></i><p>Admin access required</p></div>';
+            return;
+        }
+        const data = await res.json();
+        const tenants = data.tenants || [];
+
+        if (!tenants.length) {
+            container.innerHTML = '<div class="apps-empty"><i class="fas fa-building"></i><p>No tenants yet. Create one above.</p></div>';
+            return;
+        }
+
+        container.innerHTML = tenants.map(t => renderTenantCard(t)).join('');
+
+        // Re-expand any previously expanded cards
+        tenants.forEach(t => {
+            if (_expandedTenants[t.id]) expandTenantKeys(t.id, true);
+        });
+    } catch (e) {
+        container.innerHTML = '<div class="apps-empty"><i class="fas fa-exclamation-triangle"></i><p>Failed to load tenants</p></div>';
+    }
+}
+
+function renderTenantCard(t) {
+    const statusBadge = t.is_active
+        ? '<span class="tenant-badge active">Active</span>'
+        : '<span class="tenant-badge inactive">Inactive</span>';
+    const created = new Date(t.created_at).toLocaleDateString();
+    return `
+        <div class="tenant-card ${t.is_active ? '' : 'inactive'}" id="tenant-card-${t.id}">
+            <div class="tenant-card-header" onclick="expandTenantKeys(${t.id})">
+                <div class="tenant-card-info">
+                    <div class="tenant-name"><i class="fas fa-building" style="color:var(--accent-primary);margin-right:.4rem;font-size:.8rem;"></i>${escHtml(t.name)} ${statusBadge}</div>
+                    <div class="tenant-slug">slug: ${escHtml(t.slug)}</div>
+                    <div class="tenant-meta">
+                        <span><i class="fas fa-calendar"></i> Created ${created}</span>
+                    </div>
+                </div>
+                <div class="tenant-card-actions" onclick="event.stopPropagation()">
+                    <button class="btn-icon-xs" title="${t.is_active ? 'Disable tenant' : 'Enable tenant'}"
+                        onclick="toggleTenant(${t.id}, ${t.is_active})">
+                        <i class="fas fa-${t.is_active ? 'pause' : 'play'}"></i>
+                    </button>
+                </div>
+                <i class="fas fa-chevron-${_expandedTenants[t.id] ? 'up' : 'down'}" style="color:var(--text-muted);font-size:.75rem;flex-shrink:0;"></i>
+            </div>
+            <div class="tenant-keys-panel" id="tenant-keys-${t.id}" style="display:${_expandedTenants[t.id] ? '' : 'none'};">
+                <div class="keys-header">
+                    <span><i class="fas fa-key"></i> API Keys</span>
+                    <span id="tenant-key-count-${t.id}" style="color:var(--text-muted)">Loading…</span>
+                </div>
+                <div id="tenant-key-list-${t.id}">
+                    <div style="color:var(--text-muted);font-size:.78rem;text-align:center;padding:.5rem"><i class="fas fa-spinner fa-spin"></i></div>
+                </div>
+                <div class="add-key-form">
+                    <input type="text" id="new-key-name-${t.id}" placeholder="New key name…">
+                    <button class="btn-primary-sm" style="font-size:.75rem;padding:.3rem .7rem;" onclick="createTenantKey(${t.id})">
+                        <i class="fas fa-plus"></i> Add Key
+                    </button>
+                </div>
+            </div>
+        </div>`;
+}
+
+async function expandTenantKeys(tenantId, force) {
+    const panel = document.getElementById(`tenant-keys-${tenantId}`);
+    if (!panel) return;
+
+    const isOpen = panel.style.display !== 'none';
+    if (!force && isOpen) {
+        // Collapse
+        panel.style.display = 'none';
+        _expandedTenants[tenantId] = false;
+        return;
+    }
+
+    panel.style.display = '';
+    _expandedTenants[tenantId] = true;
+    await loadTenantKeys(tenantId);
+}
+
+async function loadTenantKeys(tenantId) {
+    const listEl = document.getElementById(`tenant-key-list-${tenantId}`);
+    const countEl = document.getElementById(`tenant-key-count-${tenantId}`);
+    if (!listEl) return;
+
+    try {
+        const res = await fetch(`${API_BASE}/api/admin/tenants/${tenantId}/keys`);
+        const data = await res.json();
+        const keys = data.keys || [];
+
+        if (countEl) countEl.textContent = `${keys.length} key${keys.length !== 1 ? 's' : ''}`;
+
+        if (!keys.length) {
+            listEl.innerHTML = '<div style="color:var(--text-muted);font-size:.78rem;padding:.3rem 0">No keys yet.</div>';
+            return;
+        }
+
+        listEl.innerHTML = keys.map(k => {
+            const masked = k.api_key.substring(0, 8) + '••••••••••••';
+            const statusColor = k.is_active ? '#10b981' : '#ef4444';
+            const adminBadge = k.is_admin ? ' <span style="font-size:.6rem;background:rgba(139,92,246,.2);color:#a78bfa;padding:1px 5px;border-radius:6px;">admin</span>' : '';
+            return `<div class="tenant-key-row">
+                <span class="tenant-key-name" title="${escHtml(k.name)}">${escHtml(k.name)}${adminBadge}</span>
+                <code class="tenant-key-code" id="tkv-${k.id}">${masked}</code>
+                <button class="btn-icon-xs" title="Reveal / Hide" onclick="toggleTenantKeyReveal(${k.id}, '${k.api_key}')"><i class="fas fa-eye" id="tke-${k.id}"></i></button>
+                <button class="btn-icon-xs" title="Copy key" onclick="copyText('${k.api_key}')"><i class="fas fa-copy"></i></button>
+                <i class="fas fa-circle" style="font-size:.45rem;color:${statusColor};flex-shrink:0;" title="${k.is_active ? 'Active' : 'Inactive'}"></i>
+                <button class="btn-icon-xs danger" title="Revoke key" onclick="revokeTenantKey(${tenantId}, ${k.id}, '${escHtml(k.name)}')"><i class="fas fa-trash-alt"></i></button>
+            </div>`;
+        }).join('');
+    } catch (e) {
+        listEl.innerHTML = '<div style="color:var(--accent-danger);font-size:.78rem;">Failed to load keys</div>';
+    }
+}
+
+function toggleTenantKeyReveal(keyId, fullKey) {
+    const el = document.getElementById(`tkv-${keyId}`);
+    const icon = document.getElementById(`tke-${keyId}`);
+    if (!el) return;
+    const isRevealed = el.dataset.revealed === '1';
+    if (isRevealed) {
+        el.textContent = fullKey.substring(0, 8) + '••••••••••••';
+        el.dataset.revealed = '0';
+        if (icon) icon.className = 'fas fa-eye';
+    } else {
+        el.textContent = fullKey;
+        el.dataset.revealed = '1';
+        if (icon) icon.className = 'fas fa-eye-slash';
+    }
+}
+
+async function createTenant() {
+    const nameEl = document.getElementById('newTenantName');
+    const slugEl = document.getElementById('newTenantSlug');
+    const name = nameEl.value.trim();
+    let slug = slugEl.value.trim().toLowerCase().replace(/\s+/g, '-');
+
+    if (!name) { nameEl.focus(); return; }
+    if (!slug) slug = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+
+    const btn = document.getElementById('addTenantBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+
+    try {
+        const res = await fetch(`${API_BASE}/api/admin/tenants`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, slug }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            alert(data.error || 'Failed to create tenant');
+            return;
+        }
+
+        // Show first API key banner
+        const banner = document.getElementById('newTenantKeyBanner');
+        const keyVal = document.getElementById('newTenantKeyValue');
+        if (banner && keyVal) {
+            keyVal.textContent = data.first_api_key;
+            banner.style.display = '';
+        }
+
+        nameEl.value = '';
+        slugEl.value = '';
+        await loadTenants();
+    } catch (e) {
+        alert('Error: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-plus"></i> Create Tenant';
+    }
+}
+
+async function toggleTenant(tenantId, currentlyActive) {
+    try {
+        const res = await fetch(`${API_BASE}/api/admin/tenants/${tenantId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ is_active: !currentlyActive }),
+        });
+        if (res.ok) await loadTenants();
+        else {
+            const err = await res.json();
+            alert(err.error || 'Failed to update tenant');
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+async function createTenantKey(tenantId) {
+    const input = document.getElementById(`new-key-name-${tenantId}`);
+    const name = (input?.value || '').trim() || 'API Key';
+    try {
+        const res = await fetch(`${API_BASE}/api/admin/tenants/${tenantId}/keys`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name }),
+        });
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || 'Failed to create key'); return; }
+        if (input) input.value = '';
+        // Auto-reveal the new key briefly
+        await loadTenantKeys(tenantId);
+        // Highlight newly created key value
+        const newKey = data.api_key;
+        if (newKey) {
+            // Find the row for this key and reveal it
+            setTimeout(() => toggleTenantKeyReveal(data.id, newKey), 150);
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+async function revokeTenantKey(tenantId, keyId, keyName) {
+    if (!confirm(`Revoke key "${keyName}"?\n\nThis will immediately invalidate it.`)) return;
+    try {
+        const res = await fetch(`${API_BASE}/api/admin/tenants/${tenantId}/keys/${keyId}`, {
+            method: 'DELETE'
+        });
+        if (res.ok) await loadTenantKeys(tenantId);
+        else {
+            const err = await res.json();
+            alert(err.error || 'Failed to revoke key');
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+function copyText(text) {
+    navigator.clipboard.writeText(text).then(() => {
+        // Brief visual feedback — reuse existing toast if available
+        const existing = document.querySelector('.toast-copied');
+        if (existing) existing.remove();
+        const toast = document.createElement('div');
+        toast.className = 'toast-copied';
+        toast.innerHTML = '<i class="fas fa-check"></i> Copied!';
+        toast.style.cssText = 'position:fixed;bottom:1.5rem;right:1.5rem;background:rgba(16,185,129,.9);color:#fff;padding:.5rem 1rem;border-radius:8px;font-size:.85rem;font-weight:600;z-index:9999;animation:fadeIn .2s ease;display:flex;gap:.4rem;align-items:center;';
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 2000);
+    }).catch(() => {
+        prompt('Copy this key:', text);
+    });
+}
+

@@ -13,7 +13,7 @@
         rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <link rel="stylesheet" href="styles.css?v=5">
+    <link rel="stylesheet" href="styles.css?v=7">
 </head>
 
 <body>
@@ -620,18 +620,26 @@
                 <button class="close-modal-btn" id="closeSettingsBtn"><i class="fas fa-times"></i></button>
             </div>
 
-            <!-- Authorized Applications -->
-            <div class="settings-section">
-                <div class="settings-label">
-                    <i class="fas fa-shield-halved"></i> Authorized Applications
-                </div>
+            <!-- Settings Tabs -->
+            <div class="settings-tabs">
+                <button class="settings-tab active" id="stab-keys" onclick="switchSettingsTab('keys')">
+                    <i class="fas fa-shield-halved"></i> API Keys
+                </button>
+                <button class="settings-tab" id="stab-tenants" onclick="switchSettingsTab('tenants')">
+                    <i class="fas fa-building"></i> Tenants
+                </button>
+                <button class="settings-tab" id="stab-docs" onclick="switchSettingsTab('docs')">
+                    <i class="fas fa-book"></i> API Docs
+                </button>
+            </div>
+
+            <!-- Tab: API Keys -->
+            <div class="settings-tab-panel" id="spanel-keys">
                 <p class="settings-desc">Manage which external applications can access the DocGuard AI API. Each app
                     gets a unique API key.</p>
-
                 <div id="appsList" class="apps-list">
                     <!-- Populated by JS -->
                 </div>
-
                 <div class="add-app-form" id="addAppForm">
                     <input type="text" id="newAppNameInput" placeholder="Application name (e.g. SIEM Integration)"
                         class="app-name-input">
@@ -641,15 +649,47 @@
                 </div>
             </div>
 
-            <!-- API Documentation -->
-            <div class="settings-section">
-                <div class="settings-label">
-                    <i class="fas fa-book"></i> API Documentation
-                    <span class="badge badge-secondary">REST</span>
+            <!-- Tab: Tenants (admin only) -->
+            <div class="settings-tab-panel" id="spanel-tenants" style="display:none;">
+                <p class="settings-desc">Create and manage tenants. Each tenant has isolated documents, knowledge base,
+                    and API keys.</p>
+
+                <!-- Create tenant form -->
+                <div class="add-tenant-form glass-card" style="margin-bottom:1rem;">
+                    <div style="display:flex;gap:.75rem;align-items:center;flex-wrap:wrap;">
+                        <input type="text" id="newTenantName" placeholder="Tenant name (e.g. Acme Corp)"
+                            class="app-name-input" style="flex:1;min-width:160px;">
+                        <input type="text" id="newTenantSlug" placeholder="slug (e.g. acme)" class="app-name-input"
+                            style="flex:1;min-width:120px;">
+                        <button class="btn btn-primary-sm" id="addTenantBtn" onclick="createTenant()">
+                            <i class="fas fa-plus"></i> Create Tenant
+                        </button>
+                    </div>
+                    <div id="newTenantKeyBanner"
+                        style="display:none;margin-top:.75rem;padding:.6rem .8rem;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.3);border-radius:8px;font-size:.8rem;">
+                        <i class="fas fa-key" style="color:var(--accent-success);margin-right:.4rem;"></i>
+                        <strong>First API Key:</strong>
+                        <code id="newTenantKeyValue"
+                            style="word-break:break-all;color:var(--accent-success);margin-left:.25rem;"></code>
+                        <button class="btn-icon-xs" style="margin-left:.5rem;"
+                            onclick="copyText(document.getElementById('newTenantKeyValue').textContent)"
+                            title="Copy key">
+                            <i class="fas fa-copy"></i>
+                        </button>
+                    </div>
                 </div>
+
+                <!-- Tenant list -->
+                <div id="tenantsList">
+                    <div style="text-align:center;padding:1.5rem;color:var(--text-muted);"><i
+                            class="fas fa-spinner fa-spin"></i> Loading…</div>
+                </div>
+            </div>
+
+            <!-- Tab: API Documentation -->
+            <div class="settings-tab-panel" id="spanel-docs" style="display:none;">
                 <p class="settings-desc">Use these endpoints to integrate DocGuard AI with your company's applications.
                 </p>
-
                 <div class="api-doc-block">
                     <div class="api-doc-auth">
                         <h4>Authentication</h4>
@@ -658,14 +698,12 @@
                         <p style="margin-top:.3rem">or</p>
                         <code class="api-code-inline">Authorization: Bearer sk-your-key-here</code>
                     </div>
-
                     <div class="api-doc-endpoints">
                         <h4>Available Endpoints</h4>
                         <div class="api-endpoint-list" id="apiEndpointList">
                             <!-- Populated by JS -->
                         </div>
                     </div>
-
                     <div class="api-doc-example">
                         <h4>Example Request</h4>
                         <pre class="api-code-block" id="apiCurlExample">curl -X GET "http://localhost:3001/api/documents" \
@@ -679,6 +717,7 @@
 
         </div>
     </div>
+
     <!-- ===== LLM PROVIDER SELECTOR MODAL ===== -->
     <div class="modal-backdrop" id="llmProviderModal" style="display:none;">
         <div class="llm-modal glass-card">
@@ -737,7 +776,7 @@
         </div>
     </div>
 
-    <script src="app.js?v=6"></script>
+    <script src="app.js?v=9"></script>
 </body>
 
 </html>

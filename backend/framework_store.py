@@ -1,12 +1,14 @@
 """
-Framework Store — ChromaDB collections for compliance framework standards.
+Framework Store — ChromaDB collections for compliance framework standards (per-tenant).
 
-Each framework (CIS, GDPR, HIPAA, ISO27001, NIST, SOC2) gets its own
-ChromaDB collection so that during analysis the orchestrator can retrieve
-only the sections relevant to the specific framework being evaluated.
+Each tenant × framework combination gets its own ChromaDB collection:
+  fw_<tenant_id>_<FRAMEWORK_KEY>
+
+This ensures that tenant A's uploaded ISO27001 PDF is never visible to tenant B.
 """
 
 import os
+import threading
 import chromadb
 from chromadb.config import Settings
 from config import Config
@@ -15,25 +17,27 @@ FRAMEWORK_KEYS = ('CIS', 'GDPR', 'HIPAA', 'ISO27001', 'NIST', 'SOC2')
 
 # ---- Singleton client --------------------------------------------------------
 _client = None
+_client_lock = threading.Lock()
 
 
 def _get_client():
     global _client
-    if _client is None:
-        persist_dir = os.path.join(Config.CHROMADB_PATH, "frameworks")
-        os.makedirs(persist_dir, exist_ok=True)
-        _client = chromadb.PersistentClient(
-            path=persist_dir,
-            settings=Settings(anonymized_telemetry=False),
-        )
+    with _client_lock:
+        if _client is None:
+            persist_dir = os.path.join(Config.CHROMADB_PATH, "frameworks")
+            os.makedirs(persist_dir, exist_ok=True)
+            _client = chromadb.PersistentClient(
+                path=persist_dir,
+                settings=Settings(anonymized_telemetry=False),
+            )
     return _client
 
 
-def _get_collection(framework_key: str):
-    """Get or create the collection for a specific framework."""
+def _get_collection(tenant_id: int, framework_key: str):
+    """Get or create the per-tenant collection for a specific framework."""
     client = _get_client()
     return client.get_or_create_collection(
-        name=f"framework_{framework_key}",
+        name=f"fw_{tenant_id}_{framework_key}",
         metadata={"hnsw:space": "cosine"},
     )
 
@@ -59,9 +63,9 @@ def _chunk_text(text: str) -> list[str]:
 
 # ---- Public API --------------------------------------------------------------
 
-def add_framework(framework_key: str, version: str, filename: str, text: str) -> int:
-    """Chunk and embed a framework document. Returns chunk count."""
-    col = _get_collection(framework_key)
+def add_framework(tenant_id: int, framework_key: str, version: str, filename: str, text: str) -> int:
+    """Chunk and embed a framework document into the tenant's collection. Returns chunk count."""
+    col = _get_collection(tenant_id, framework_key)
 
     chunks = _chunk_text(text)
     if not chunks:
@@ -81,29 +85,28 @@ def add_framework(framework_key: str, version: str, filename: str, text: str) ->
     ]
 
     col.add(documents=chunks, ids=ids, metadatas=metadatas)
-    print(f"📋 Indexed {len(chunks)} chunks for {framework_key} v{version} ({filename})")
+    print(f"📋 [tenant={tenant_id}] Indexed {len(chunks)} chunks for {framework_key} v{version} ({filename})")
     return len(chunks)
 
 
-def remove_framework(framework_key: str, version: str, filename: str):
-    """Remove all chunks for a specific framework version/file."""
-    col = _get_collection(framework_key)
+def remove_framework(tenant_id: int, framework_key: str, version: str, filename: str):
+    """Remove all chunks for a specific framework version/file from the tenant's collection."""
+    col = _get_collection(tenant_id, framework_key)
     try:
-        # Delete by matching version AND filename
         col.delete(where={
             "$and": [
                 {"version": {"$eq": version}},
                 {"filename": {"$eq": filename}},
             ]
         })
-        print(f"🗑️ Removed chunks for {framework_key} v{version} ({filename})")
+        print(f"🗑️ [tenant={tenant_id}] Removed chunks for {framework_key} v{version} ({filename})")
     except Exception as e:
-        print(f"Warning: could not remove framework chunks: {e}")
+        print(f"Warning: could not remove framework chunks (tenant={tenant_id}): {e}")
 
 
-def search_framework(framework_key: str, query: str, top_k: int = 8) -> list[dict]:
-    """Search within a specific framework's collection for relevant sections."""
-    col = _get_collection(framework_key)
+def search_framework(tenant_id: int, framework_key: str, query: str, top_k: int = 8) -> list[dict]:
+    """Search within a tenant's specific framework collection for relevant sections."""
+    col = _get_collection(tenant_id, framework_key)
     if col.count() == 0:
         return []
 
@@ -128,17 +131,17 @@ def search_framework(framework_key: str, query: str, top_k: int = 8) -> list[dic
     return hits
 
 
-def get_uploaded_frameworks() -> dict:
+def get_uploaded_frameworks(tenant_id: int) -> dict:
     """
     Return a dict: { framework_key: bool } indicating which frameworks
-    have at least one document indexed.
+    the specified tenant has at least one document indexed for.
     """
     client = _get_client()
     status = {}
     for key in FRAMEWORK_KEYS:
         try:
             col = client.get_or_create_collection(
-                name=f"framework_{key}",
+                name=f"fw_{tenant_id}_{key}",
                 metadata={"hnsw:space": "cosine"},
             )
             status[key] = col.count() > 0
