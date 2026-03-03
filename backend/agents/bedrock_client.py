@@ -5,8 +5,12 @@ from config import Config
 
 
 class BedrockClient:
-    """AWS Bedrock client supporting Claude and Nova models with multiple auth methods.
-    
+    """AWS Bedrock client for Amazon Nova models via the Converse API.
+
+    Supports two auth methods:
+    - Bearer token (via AWS_BEARER_TOKEN_BEDROCK)
+    - IAM credentials (access key / secret key / session token)
+
     Supports hybrid model routing: a primary model and a fast model.
     Use invoke() for the default model, invoke_fast() for the cheaper/faster model.
     """
@@ -14,8 +18,6 @@ class BedrockClient:
     def __init__(self):
         self.model_id = Config.BEDROCK_MODEL_ID
         self.model_id_fast = Config.BEDROCK_MODEL_ID_FAST
-        self.is_nova = 'nova' in self.model_id.lower()
-        self.is_claude = 'claude' in self.model_id.lower()
         self.total_input_tokens = 0
         self.total_output_tokens = 0
 
@@ -49,8 +51,8 @@ class BedrockClient:
 
     def invoke(self, prompt: str, max_tokens: int = 4096, temperature: float = 0.3,
                model_override: str = None) -> str:
-        """Send a prompt to the model and return the text response.
-        
+        """Send a prompt to Amazon Nova and return the text response.
+
         Args:
             prompt: The prompt text.
             max_tokens: Max tokens in response.
@@ -60,14 +62,11 @@ class BedrockClient:
         model_id = model_override or self.model_id
         if self.use_bearer:
             return self._invoke_bearer(prompt, max_tokens, temperature, model_id)
-        # Check if this specific model ID is Claude-style
-        if 'claude' in model_id.lower():
-            return self._invoke_claude(prompt, max_tokens, temperature, model_id)
         return self._invoke_converse(prompt, max_tokens, temperature, model_id)
 
     def invoke_fast(self, prompt: str, max_tokens: int = 4096, temperature: float = 0.2) -> str:
-        """Send a prompt using the fast/cheap model (Haiku by default).
-        
+        """Send a prompt using the fast/cheap model.
+
         Falls back to the primary model if the fast model is unavailable
         (e.g. not enabled in the current AWS region).
         """
@@ -83,41 +82,22 @@ class BedrockClient:
         return self.invoke(prompt, max_tokens=max_tokens, temperature=temperature)
 
     # ----- Private helpers ------------------------------------------------------
-    def _invoke_claude(self, prompt: str, max_tokens: int, temperature: float,
-                       model_id: str) -> str:
-        body = json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": max_tokens,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": temperature,
-        })
-        resp = self.client.invoke_model(modelId=model_id, body=body)
-        data = json.loads(resp['body'].read())
-        
-        # Claude text completions API might return token usage but it varies. 
-        # Generally AWS wrappers provide them in response metadata, but sometimes Anthropic 
-        # returns it directly in the data. If present, add to counts.
-        if 'usage' in data:
-            self.total_input_tokens += data['usage'].get('input_tokens', 0)
-            self.total_output_tokens += data['usage'].get('output_tokens', 0)
-            
-        return data['content'][0]['text']
-
     def _invoke_converse(self, prompt: str, max_tokens: int, temperature: float,
                          model_id: str) -> str:
+        """Call Bedrock Converse API (works with Amazon Nova and other supported models)."""
         resp = self.client.converse(
             modelId=model_id,
             messages=[{"role": "user", "content": [{"text": prompt}]}],
             inferenceConfig={"maxTokens": max_tokens, "temperature": temperature},
         )
         if 'usage' in resp:
-            print("Bedrock Converse Usage data:", resp['usage'])
             self.total_input_tokens += resp['usage'].get('inputTokens', 0)
             self.total_output_tokens += resp['usage'].get('outputTokens', 0)
         return resp['output']['message']['content'][0]['text']
 
     def _invoke_bearer(self, prompt: str, max_tokens: int, temperature: float,
                        model_id: str) -> str:
+        """Call Bedrock Converse API via Bearer token auth (HTTP)."""
         url = (
             f"https://bedrock-runtime.{Config.AWS_REGION}.amazonaws.com"
             f"/model/{model_id}/converse"
@@ -136,13 +116,11 @@ class BedrockClient:
             print(f"Bedrock Bearer error {resp.status_code}: {resp.text[:500]}")
         resp.raise_for_status()
         data = resp.json()
-        
-        # The bedrock converse API always includes usage struct
-        print("Bedrock Bearer Raw Response Data Keys:", data.keys(), data.get('usage'))
+
         if 'usage' in data:
             self.total_input_tokens += data['usage'].get('inputTokens', 0)
             self.total_output_tokens += data['usage'].get('outputTokens', 0)
-            
+
         return data['output']['message']['content'][0]['text']
 
     # ----- JSON parsing ---------------------------------------------------------
