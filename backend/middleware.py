@@ -4,6 +4,7 @@ Authentication middleware for DocGuard AI.
 Enforces API key auth on all /api/ routes, checks key expiration,
 populates g.tenant_id and g.is_admin per request.
 """
+import json
 from datetime import datetime
 from flask import request, jsonify, g
 from config import Config
@@ -85,9 +86,43 @@ def register_middleware(app):
         if internal_token and internal_token == Config.INTERNAL_TOKEN:
             g.tenant_id = 1
             g.is_admin = True
+            g._internal_token_auth = True
             return None
 
         return jsonify({
             'error': 'Authentication required',
             'message': 'Please provide an API key via X-API-Key or Authorization: Bearer.',
         }), 401
+
+    @app.after_request
+    def wrap_api_response(response):
+        """Wrap JSON responses for external API-key callers.
+
+        GET  → {"success": true/false, "data": { ... }}
+        POST → {"success": true/false, "message": { ... }}
+
+        Internal frontend requests (X-Internal-Token) are NOT wrapped
+        so the existing UI continues to work without changes.
+        """
+        # Only wrap /api/ JSON responses
+        if not request.path.startswith('/api/'):
+            return response
+        if not response.content_type or 'application/json' not in response.content_type:
+            return response
+        # Skip wrapping for internal frontend requests
+        if getattr(g, '_internal_token_auth', False):
+            return response
+
+        data = response.get_json(silent=True)
+        if data is None:
+            return response
+        # Don't double-wrap if already in envelope
+        if isinstance(data, dict) and 'success' in data:
+            return response
+
+        is_success = response.status_code < 400
+        key = 'data' if request.method == 'GET' else 'message'
+        wrapped = {'success': is_success, key: data}
+
+        response.set_data(json.dumps(wrapped))
+        return response

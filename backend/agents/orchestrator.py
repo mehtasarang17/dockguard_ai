@@ -251,7 +251,7 @@ class Orchestrator:
                     hits = framework_store.search_framework(fw_key, text[:2000], top_k=10)
                     if hits:
                         prompt = framework_comparison_prompt(text, doc_type, fw_key, hits)
-                        raw = llm.invoke(prompt, max_tokens=4096)
+                        raw = llm.invoke(prompt, max_tokens=6144)
                         data = llm.parse_json(raw)
                         data['source'] = 'uploaded_standard'
                         mappings[fw_key] = data
@@ -265,7 +265,7 @@ class Orchestrator:
             remaining = [k for k in framework_store.FRAMEWORK_KEYS if k not in mappings]
             if remaining:
                 prompt = framework_mapping_prompt(text, doc_type)
-                raw = llm.invoke(prompt, max_tokens=6144)
+                raw = llm.invoke(prompt, max_tokens=8192)
                 data = llm.parse_json(raw)
                 for key in remaining:
                     if key in data:

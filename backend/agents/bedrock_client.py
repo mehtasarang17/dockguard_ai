@@ -148,4 +148,20 @@ class BedrockClient:
                 return json.loads(text[start:end + 1])
             except json.JSONDecodeError:
                 pass
+        # Attempt to repair truncated JSON (close open brackets/braces)
+        if start != -1:
+            fragment = text[start:]
+            # Strip trailing incomplete string/value
+            for ch in (',', '"', "'"):
+                idx = fragment.rfind(ch)
+                if idx > 0:
+                    candidate = fragment[:idx]
+                    # Close any open [ and {
+                    open_b = candidate.count('[') - candidate.count(']')
+                    open_c = candidate.count('{') - candidate.count('}')
+                    candidate += ']' * max(open_b, 0) + '}' * max(open_c, 0)
+                    try:
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        continue
         raise ValueError(f"Could not parse JSON from LLM response:\n{text[:500]}")
