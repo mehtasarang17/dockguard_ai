@@ -43,6 +43,9 @@ services:
       SECRET_KEY: ${SECRET_KEY:-change-me-in-env}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-mistral:7b}
+      PROVISIONING_MASTER_KEY: ${PROVISIONING_MASTER_KEY:-CHANGE-ME-set-PROVISIONING_MASTER_KEY-in-env}
+      CHROMA_HOST: doc-analyzer-chromadb
+      CHROMA_PORT: "8000"
     ports:
       - "5002:5000" # Dev only — remove in production
     healthcheck:
@@ -53,11 +56,11 @@ services:
       start_period: 15s
     volumes:
       - doc_analyzer_v2_uploads:/app/uploads
-      - doc_analyzer_v2_chromadb:/app/chromadb_data
-      - doc_analyzer_v2_chroma_cache:/root/.cache/chroma
     depends_on:
       doc-analyzer-db:
         condition: service_healthy
+      doc-analyzer-chromadb:
+        condition: service_started
     networks:
       - doc-analyzer-v2
     restart: unless-stopped
@@ -90,16 +93,28 @@ services:
       - doc-analyzer-v2
     restart: unless-stopped
 
+  # ---- ChromaDB Server (Vector Store) ----
+  doc-analyzer-chromadb:
+    image: chromadb/chroma:0.4.24
+    container_name: doc-analyzer-chromadb
+    environment:
+      ANONYMIZED_TELEMETRY: 'False'
+      IS_PERSISTENT: 'TRUE'
+      PERSIST_DIRECTORY: /chroma/chroma
+    volumes:
+      - doc_analyzer_v2_chromadb:/chroma/chroma
+    ports:
+      - "8100:8000" # Dev only — remove in production
+    networks:
+      - doc-analyzer-v2
+    restart: unless-stopped
+
 volumes:
   doc_analyzer_v2_db:
     driver: local
   doc_analyzer_v2_uploads:
     driver: local
   doc_analyzer_v2_chromadb:
-    driver: local
-  doc_analyzer_v2_chroma_cache:
-    driver: local
-  doc_analyzer_v2_frameworks:
     driver: local
   doc_analyzer_v2_ollama:
     driver: local

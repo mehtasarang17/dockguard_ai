@@ -70,11 +70,16 @@ orchestrator = Orchestrator()
 chat_llm = get_llm_client()
 
 # ---- API Key Authentication Middleware ---------------------------------------
-AUTH_EXEMPT_ROUTES = {'health'}
+# /apispec.json is public — Swagger UI fetches it without a key
+SWAGGER_PREFIXES = ('/apispec.json',)
+AUTH_EXEMPT_ROUTES = {'health', 'provision'}
 
 @app.before_request
 def require_api_key():
     """Enforce API key auth on all /api/ routes; populate g.tenant_id & g.is_admin."""
+    # Allow Swagger UI and spec to load without a key
+    if any(request.path.startswith(p) for p in SWAGGER_PREFIXES):
+        return None
     if not request.path.startswith('/api/'):
         return None
     if request.endpoint in AUTH_EXEMPT_ROUTES:
@@ -84,10 +89,14 @@ def require_api_key():
     # This MUST take priority over X-Internal-Token so that tenant-scoped keys work
     # correctly even when Nginx injects the internal token on all proxied requests.
     api_key = request.headers.get('X-API-Key', '')
-    if not api_key:
-        auth_header = request.headers.get('Authorization', '')
-        if auth_header.startswith('Bearer '):
-            api_key = auth_header[7:]
+    auth_header = request.headers.get('Authorization', '')
+
+    # Track whether the caller is explicitly trying to authenticate.
+    # If they are, we must NOT silently fall back to X-Internal-Token.
+    explicit_auth_attempt = bool(api_key) or bool(auth_header)
+
+    if not api_key and auth_header.startswith('Bearer '):
+        api_key = auth_header[7:].strip()
 
     if api_key:
         db = get_db()
@@ -109,8 +118,16 @@ def require_api_key():
         finally:
             db.close()
 
+    # If an explicit auth was attempted but the key was invalid/empty, reject immediately.
+    # Do NOT fall through to internal token — that would let Swagger bypass auth.
+    if explicit_auth_attempt:
+        return jsonify({
+            'error': 'Invalid API key',
+            'message': 'Provide a valid key as: Authorization: Bearer sk-your-key',
+        }), 401
+
     # Fallback: frontend proxy via Nginx — assign to default tenant with admin rights.
-    # Only reached when no explicit API key is present.
+    # Only reached when NO explicit auth headers are present (i.e. the main browser UI).
     internal_token = request.headers.get('X-Internal-Token', '')
     if internal_token and internal_token == Config.INTERNAL_TOKEN:
         g.tenant_id = 1
@@ -349,9 +366,89 @@ def _process_batch(batch_id: int, documents_info: list, document_type: str):
 # API ENDPOINTS
 # ==============================================================================
 
+@app.route('/apispec.json', methods=['GET'])
+def apispec():
+    """Serve the OpenAPI spec as JSON for Swagger UI."""
+    import yaml
+    spec_path = os.path.join(os.path.dirname(__file__), 'swagger.yml')
+    with open(spec_path, 'r') as f:
+        spec = yaml.safe_load(f)
+    return jsonify(spec)
+
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'healthy', 'timestamp': datetime.utcnow().isoformat()})
+
+
+@app.route('/api/provision', methods=['POST'])
+def provision():
+    """Auto-provision a new tenant. Secured with PROVISIONING_MASTER_KEY.
+
+    Called by the SaaS backend when a new customer signs up.
+    Creates the tenant and its first API key in one call.
+    """
+    # --- Auth: master provisioning key (separate from tenant API keys) ---
+    master_key = Config.PROVISIONING_MASTER_KEY
+    if master_key.startswith('CHANGE-ME'):
+        return jsonify({'error': 'Provisioning is not configured',
+                        'message': 'Set PROVISIONING_MASTER_KEY in .env'}), 503
+
+    provided = request.headers.get('X-Provisioning-Key', '')
+    if not provided or provided != master_key:
+        return jsonify({'error': 'Unauthorized',
+                        'message': 'Invalid or missing X-Provisioning-Key header.'}), 401
+
+    # --- Payload ---
+    data = request.get_json(force=True) or {}
+    name = data.get('name', '').strip()
+    slug = data.get('slug', '').strip().lower().replace(' ', '-')
+    if not name or not slug:
+        return jsonify({'error': 'name and slug are required'}), 400
+
+    db = get_db()
+    try:
+        # Idempotent: if the slug already exists, return the existing tenant
+        existing = db.query(Tenant).filter_by(slug=slug).first()
+        if existing:
+            # Find the first active key for this tenant
+            existing_key = db.query(AuthorizedApp).filter_by(
+                tenant_id=existing.id, is_active=True
+            ).first()
+            return jsonify({
+                'tenant': existing.to_dict(),
+                'api_key': existing_key.api_key if existing_key else None,
+                'created': False,
+                'message': f'Tenant "{slug}" already exists.',
+            }), 200
+
+        # Create tenant
+        tenant = Tenant(name=name, slug=slug, is_active=True)
+        db.add(tenant)
+        db.flush()
+
+        # Create first API key
+        first_key = f"sk-{uuid.uuid4()}"
+        app_entry = AuthorizedApp(
+            tenant_id=tenant.id,
+            name=f"{name} — Default Key",
+            api_key=first_key,
+            is_active=True,
+            is_admin=False,
+        )
+        db.add(app_entry)
+        db.commit()
+        db.refresh(tenant)
+
+        return jsonify({
+            'tenant': tenant.to_dict(),
+            'api_key': first_key,
+            'created': True,
+            'message': f'Tenant "{name}" provisioned successfully.',
+        }), 201
+    finally:
+        db.close()
+
 
 
 # ---- LLM Provider Management ------------------------------------------------

@@ -31,12 +31,22 @@ def _get_client():
     global _client
     with _client_lock:
         if _client is None:
-            persist_dir = Config.CHROMADB_PATH
-            os.makedirs(persist_dir, exist_ok=True)
-            _client = chromadb.PersistentClient(
-                path=persist_dir,
-                settings=Settings(anonymized_telemetry=False),
-            )
+            if Config.CHROMA_HOST:
+                # Client/server mode — connect to separate ChromaDB container
+                _client = chromadb.HttpClient(
+                    host=Config.CHROMA_HOST,
+                    port=Config.CHROMA_PORT,
+                    settings=Settings(anonymized_telemetry=False),
+                )
+                print(f"🔗 ChromaDB connected to {Config.CHROMA_HOST}:{Config.CHROMA_PORT}")
+            else:
+                # Embedded mode — local PersistentClient (dev fallback)
+                persist_dir = Config.CHROMADB_PATH
+                os.makedirs(persist_dir, exist_ok=True)
+                _client = chromadb.PersistentClient(
+                    path=persist_dir,
+                    settings=Settings(anonymized_telemetry=False),
+                )
     return _client
 
 

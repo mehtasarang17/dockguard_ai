@@ -36,9 +36,18 @@ class Config:
     # Vector Store
     CHROMADB_PATH = os.environ.get('CHROMADB_PATH', '/app/chromadb_data')
 
+    # ChromaDB client/server mode (for production scalability)
+    # When CHROMA_HOST is set, the backend connects to a separate ChromaDB server
+    # instead of using the embedded PersistentClient.
+    CHROMA_HOST = os.environ.get('CHROMA_HOST', '')   # e.g. "doc-analyzer-chromadb"
+    CHROMA_PORT = int(os.environ.get('CHROMA_PORT', '8000'))
+
     # Flask
     DEBUG = os.environ.get('DEBUG', 'False').lower() in ('true', '1', 'yes')
     SECRET_KEY = os.environ.get('SECRET_KEY', 'CHANGE-ME-set-SECRET_KEY-in-env')
 
     # Internal token shared between Nginx proxy and Flask for frontend bypass
     INTERNAL_TOKEN = os.environ.get('INTERNAL_TOKEN', 'CHANGE-ME-set-INTERNAL_TOKEN-in-env')
+
+    # Master key for auto-provisioning tenants (used by SaaS backend)
+    PROVISIONING_MASTER_KEY = os.environ.get('PROVISIONING_MASTER_KEY', 'CHANGE-ME-set-PROVISIONING_MASTER_KEY-in-env')

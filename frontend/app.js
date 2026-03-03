@@ -2565,6 +2565,11 @@ function timeAgo(date) {
 
 // ---- API Documentation in Settings ----
 const API_ENDPOINTS = [
+    // Settings
+    { method: 'GET', path: '/api/settings/llm-provider', desc: 'Get current LLM provider' },
+    { method: 'POST', path: '/api/settings/llm-provider', desc: 'Set LLM provider (bedrock/ollama)' },
+    { method: 'GET', path: '/api/ollama/status', desc: 'Ollama service status' },
+    { method: 'POST', path: '/api/ollama/pull', desc: 'Pull an Ollama model (SSE stream)' },
     // Documents
     { method: 'GET', path: '/api/documents', desc: 'List all documents' },
     { method: 'GET', path: '/api/documents/:id', desc: 'Get a single document' },
@@ -2606,6 +2611,9 @@ const API_ENDPOINTS = [
     { method: 'GET', path: '/api/system/apps', desc: 'List authorized applications' },
     { method: 'POST', path: '/api/system/apps', desc: 'Create an application + key' },
     { method: 'DELETE', path: '/api/system/apps/:id', desc: 'Delete an application' },
+    { method: 'PATCH', path: '/api/system/apps/:id/toggle', desc: 'Toggle app active/inactive' },
+    { method: 'GET', path: '/api/system/settings/api-key', desc: 'Get current API key' },
+    { method: 'POST', path: '/api/system/settings/api-key/refresh', desc: 'Refresh API key' },
     // Admin (requires is_admin)
     { method: 'GET', path: '/api/admin/tenants', desc: 'List all tenants' },
     { method: 'POST', path: '/api/admin/tenants', desc: 'Create a tenant' },
@@ -2613,6 +2621,8 @@ const API_ENDPOINTS = [
     { method: 'GET', path: '/api/admin/tenants/:id/keys', desc: 'List tenant API keys' },
     { method: 'POST', path: '/api/admin/tenants/:id/keys', desc: 'Create tenant API key' },
     { method: 'DELETE', path: '/api/admin/tenants/:id/keys/:keyId', desc: 'Revoke tenant API key' },
+    // Provisioning (SaaS integration — uses X-Provisioning-Key header)
+    { method: 'POST', path: '/api/provision', desc: 'Auto-provision a new tenant (master key)' },
 ];
 
 function populateApiDocs() {

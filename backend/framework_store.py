@@ -24,12 +24,21 @@ def _get_client():
     global _client
     with _client_lock:
         if _client is None:
-            persist_dir = os.path.join(Config.CHROMADB_PATH, "frameworks")
-            os.makedirs(persist_dir, exist_ok=True)
-            _client = chromadb.PersistentClient(
-                path=persist_dir,
-                settings=Settings(anonymized_telemetry=False),
-            )
+            if Config.CHROMA_HOST:
+                # Client/server mode — shared ChromaDB server (same as vector_store)
+                _client = chromadb.HttpClient(
+                    host=Config.CHROMA_HOST,
+                    port=Config.CHROMA_PORT,
+                    settings=Settings(anonymized_telemetry=False),
+                )
+            else:
+                # Embedded mode — local PersistentClient (dev fallback)
+                persist_dir = os.path.join(Config.CHROMADB_PATH, "frameworks")
+                os.makedirs(persist_dir, exist_ok=True)
+                _client = chromadb.PersistentClient(
+                    path=persist_dir,
+                    settings=Settings(anonymized_telemetry=False),
+                )
     return _client
 
 
