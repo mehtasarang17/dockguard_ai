@@ -109,6 +109,24 @@ services:
       - doc-analyzer-v2
     restart: unless-stopped
 
+  # ---- pgAdmin (PostgreSQL GUI) ----
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: doc-analyzer-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@docguard.ai}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_LISTEN_PORT: 80
+    ports:
+      - "5050:80"
+    depends_on:
+      - doc-analyzer-db
+    volumes:
+      - doc_analyzer_v2_pgadmin:/var/lib/pgadmin
+    networks:
+      - doc-analyzer-v2
+    restart: unless-stopped
+
 volumes:
   doc_analyzer_v2_db:
     driver: local
@@ -117,6 +135,8 @@ volumes:
   doc_analyzer_v2_chromadb:
     driver: local
   doc_analyzer_v2_ollama:
+    driver: local
+  doc_analyzer_v2_pgadmin:
     driver: local
 
 networks:

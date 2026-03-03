@@ -64,17 +64,12 @@ paths:
       summary: Auto-provision a new tenant
       description: |
         Called by your SaaS backend when a new customer signs up.
-        Creates the tenant and its first API key in one atomic call.
+        Creates the tenant, its first API key (with expiration), and a refresh token.
 
-        **Auth:** Uses `X-Provisioning-Key` header (not Bearer token).
+        **No Bearer auth needed** — this is a public provisioning endpoint.
         **Idempotent:** If the slug already exists, returns the existing tenant (200).
       security: []
       parameters:
-        - name: X-Provisioning-Key
-          in: header
-          required: true
-          type: string
-          description: The PROVISIONING_MASTER_KEY from .env
         - in: body
           name: body
           required: true
@@ -89,6 +84,10 @@ paths:
                 type: string
                 example: acme-corp
                 description: URL-safe unique identifier (lowercase, hyphens)
+              expires_in_days:
+                type: integer
+                default: 90
+                description: API key validity in days (default 90)
       responses:
         201:
           description: Tenant created
@@ -100,6 +99,12 @@ paths:
               api_key:
                 type: string
                 example: sk-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+              refresh_token:
+                type: string
+                example: rt-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+              expires_at:
+                type: string
+                format: date-time
               created:
                 type: boolean
                 example: true
@@ -114,6 +119,13 @@ paths:
                 $ref: '#/definitions/TenantSummary'
               api_key:
                 type: string
+              refresh_token:
+                type: string
+              expires_at:
+                type: string
+                format: date-time
+              is_expired:
+                type: boolean
               created:
                 type: boolean
                 example: false
@@ -121,15 +133,109 @@ paths:
                 type: string
         400:
           description: Missing name or slug
+
+  /refresh-key:
+    post:
+      tags: [Provisioning]
+      summary: Rotate an API key using a refresh token
+      description: |
+        Generates a new API key, a new refresh token (one-time use), and
+        resets the expiration. The old key and refresh token are invalidated.
+
+        **No Bearer auth needed** — uses the refresh token for authentication.
+      security: []
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            required: [refresh_token]
+            properties:
+              refresh_token:
+                type: string
+                example: rt-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+              expires_in_days:
+                type: integer
+                default: 90
+                description: New key validity in days
+      responses:
+        200:
+          description: Key rotated successfully
+          schema:
+            type: object
+            properties:
+              api_key:
+                type: string
+                example: sk-new-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+              refresh_token:
+                type: string
+                example: rt-new-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+              expires_at:
+                type: string
+                format: date-time
+              tenant_id:
+                type: integer
+              message:
+                type: string
+        400:
+          description: Missing refresh_token
         401:
-          description: Invalid or missing X-Provisioning-Key
-        503:
-          description: PROVISIONING_MASTER_KEY not configured
+          description: Invalid or already-used refresh token
+        403:
+          description: Application disabled
+
+  /verify-key:
+    post:
+      tags: [Provisioning]
+      summary: Verify an API key and get tenant info
+      description: |
+        Checks if an API key is valid, active, and not expired.
+        Returns the tenant name and status.
+
+        **No Bearer auth needed** — the API key is passed in the request body.
+      security: []
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            required: [api_key]
+            properties:
+              api_key:
+                type: string
+                example: sk-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+      responses:
+        200:
+          description: Key is valid and active
+          schema:
+            type: object
+            properties:
+              valid:
+                type: boolean
+                example: true
+              tenant_name:
+                type: string
+              tenant_slug:
+                type: string
+              tenant_id:
+                type: integer
+              expires_at:
+                type: string
+                format: date-time
+              is_admin:
+                type: boolean
+        400:
+          description: Missing api_key
+        401:
+          description: Invalid or expired API key
+        403:
+          description: API key disabled
 
 # ============================================================
 # SETTINGS — LLM Provider & Ollama
 # ============================================================
-paths:
   /settings/llm-provider:
     get:
       tags: [Settings]
@@ -1037,6 +1143,12 @@ definitions:
       last_used:
         type: string
         format: date-time
+      expires_at:
+        type: string
+        format: date-time
+        description: "Null if key never expires"
+      is_expired:
+        type: boolean
 
   AppDetail:
     allOf:
@@ -1046,6 +1158,9 @@ definitions:
           api_key:
             type: string
             example: sk-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+          refresh_token:
+            type: string
+            example: rt-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 
   TenantSummary:
     type: object

@@ -69,75 +69,10 @@ init_default_app()
 orchestrator = Orchestrator()
 chat_llm = get_llm_client()
 
-# ---- API Key Authentication Middleware ---------------------------------------
-# /apispec.json is public — Swagger UI fetches it without a key
-SWAGGER_PREFIXES = ('/apispec.json',)
-AUTH_EXEMPT_ROUTES = {'health', 'provision'}
+# ---- API Key Authentication Middleware (see middleware.py) --------------------
+from middleware import register_middleware
+register_middleware(app)
 
-@app.before_request
-def require_api_key():
-    """Enforce API key auth on all /api/ routes; populate g.tenant_id & g.is_admin."""
-    # Allow Swagger UI and spec to load without a key
-    if any(request.path.startswith(p) for p in SWAGGER_PREFIXES):
-        return None
-    if not request.path.startswith('/api/'):
-        return None
-    if request.endpoint in AUTH_EXEMPT_ROUTES:
-        return None
-
-    # First: check for an explicit API key (X-API-Key header or Authorization Bearer).
-    # This MUST take priority over X-Internal-Token so that tenant-scoped keys work
-    # correctly even when Nginx injects the internal token on all proxied requests.
-    api_key = request.headers.get('X-API-Key', '')
-    auth_header = request.headers.get('Authorization', '')
-
-    # Track whether the caller is explicitly trying to authenticate.
-    # If they are, we must NOT silently fall back to X-Internal-Token.
-    explicit_auth_attempt = bool(api_key) or bool(auth_header)
-
-    if not api_key and auth_header.startswith('Bearer '):
-        api_key = auth_header[7:].strip()
-
-    if api_key:
-        db = get_db()
-        try:
-            app_entry = db.query(AuthorizedApp).filter_by(api_key=api_key).first()
-            if not app_entry:
-                return jsonify({'error': 'Invalid API key', 'message': 'API key not recognised.'}), 401
-            if not app_entry.is_active:
-                return jsonify({
-                    'error': 'Application disabled',
-                    'message': 'This application has been disabled.',
-                }), 403
-            # Record last-used timestamp
-            app_entry.last_used = datetime.utcnow()
-            db.commit()
-            g.tenant_id = app_entry.tenant_id
-            g.is_admin = bool(app_entry.is_admin)
-            return None
-        finally:
-            db.close()
-
-    # If an explicit auth was attempted but the key was invalid/empty, reject immediately.
-    # Do NOT fall through to internal token — that would let Swagger bypass auth.
-    if explicit_auth_attempt:
-        return jsonify({
-            'error': 'Invalid API key',
-            'message': 'Provide a valid key as: Authorization: Bearer sk-your-key',
-        }), 401
-
-    # Fallback: frontend proxy via Nginx — assign to default tenant with admin rights.
-    # Only reached when NO explicit auth headers are present (i.e. the main browser UI).
-    internal_token = request.headers.get('X-Internal-Token', '')
-    if internal_token and internal_token == Config.INTERNAL_TOKEN:
-        g.tenant_id = 1
-        g.is_admin = True
-        return None
-
-    return jsonify({
-        'error': 'Authentication required',
-        'message': 'Please provide an API key via X-API-Key or Authorization: Bearer.',
-    }), 401
 
 
 def _tenant_id() -> int:
@@ -383,26 +318,18 @@ def health():
 
 @app.route('/api/provision', methods=['POST'])
 def provision():
-    """Auto-provision a new tenant. Secured with PROVISIONING_MASTER_KEY.
+    """Auto-provision a new tenant.
 
     Called by the SaaS backend when a new customer signs up.
-    Creates the tenant and its first API key in one call.
+    Creates the tenant, its first API key (with expiration), and a refresh token.
     """
-    # --- Auth: master provisioning key (separate from tenant API keys) ---
-    master_key = Config.PROVISIONING_MASTER_KEY
-    if master_key.startswith('CHANGE-ME'):
-        return jsonify({'error': 'Provisioning is not configured',
-                        'message': 'Set PROVISIONING_MASTER_KEY in .env'}), 503
-
-    provided = request.headers.get('X-Provisioning-Key', '')
-    if not provided or provided != master_key:
-        return jsonify({'error': 'Unauthorized',
-                        'message': 'Invalid or missing X-Provisioning-Key header.'}), 401
+    from datetime import timedelta
 
     # --- Payload ---
     data = request.get_json(force=True) or {}
     name = data.get('name', '').strip()
     slug = data.get('slug', '').strip().lower().replace(' ', '-')
+    expires_in_days = int(data.get('expires_in_days', 90))
     if not name or not slug:
         return jsonify({'error': 'name and slug are required'}), 400
 
@@ -411,13 +338,15 @@ def provision():
         # Idempotent: if the slug already exists, return the existing tenant
         existing = db.query(Tenant).filter_by(slug=slug).first()
         if existing:
-            # Find the first active key for this tenant
             existing_key = db.query(AuthorizedApp).filter_by(
                 tenant_id=existing.id, is_active=True
             ).first()
             return jsonify({
                 'tenant': existing.to_dict(),
                 'api_key': existing_key.api_key if existing_key else None,
+                'refresh_token': existing_key.refresh_token if existing_key else None,
+                'expires_at': existing_key.expires_at.isoformat() if existing_key and existing_key.expires_at else None,
+                'is_expired': existing_key.is_expired if existing_key else False,
                 'created': False,
                 'message': f'Tenant "{slug}" already exists.',
             }), 200
@@ -427,14 +356,19 @@ def provision():
         db.add(tenant)
         db.flush()
 
-        # Create first API key
+        # Create first API key with expiration + refresh token
         first_key = f"sk-{uuid.uuid4()}"
+        refresh_tok = f"rt-{uuid.uuid4()}"
+        expires_at = datetime.utcnow() + timedelta(days=expires_in_days)
+
         app_entry = AuthorizedApp(
             tenant_id=tenant.id,
             name=f"{name} — Default Key",
             api_key=first_key,
             is_active=True,
             is_admin=False,
+            expires_at=expires_at,
+            refresh_token=refresh_tok,
         )
         db.add(app_entry)
         db.commit()
@@ -443,12 +377,120 @@ def provision():
         return jsonify({
             'tenant': tenant.to_dict(),
             'api_key': first_key,
+            'refresh_token': refresh_tok,
+            'expires_at': expires_at.isoformat(),
             'created': True,
             'message': f'Tenant "{name}" provisioned successfully.',
         }), 201
     finally:
         db.close()
 
+
+@app.route('/api/refresh-key', methods=['POST'])
+def provision_refresh_key():
+    """Rotate an expired (or active) API key using a refresh token.
+
+    Generates a new API key, a new refresh token (one-time use), and
+    resets the expiration. The old key and refresh token are invalidated.
+    """
+    from datetime import timedelta
+
+    data = request.get_json(force=True) or {}
+    refresh_token = data.get('refresh_token', '').strip()
+    new_expires_in_days = int(data.get('expires_in_days', 90))
+
+    if not refresh_token:
+        return jsonify({'error': 'refresh_token is required'}), 400
+
+    db = get_db()
+    try:
+        app_entry = db.query(AuthorizedApp).filter_by(refresh_token=refresh_token).first()
+        if not app_entry:
+            return jsonify({
+                'error': 'Invalid refresh token',
+                'message': 'Refresh token not found or already used.',
+            }), 401
+        if not app_entry.is_active:
+            return jsonify({
+                'error': 'Application disabled',
+                'message': 'This application has been disabled by an administrator.',
+            }), 403
+
+        # Rotate: new API key + new refresh token + reset expiry
+        old_key = app_entry.api_key
+        app_entry.api_key = f"sk-{uuid.uuid4()}"
+        app_entry.refresh_token = f"rt-{uuid.uuid4()}"
+        app_entry.expires_at = datetime.utcnow() + timedelta(days=new_expires_in_days)
+        app_entry.last_used = None  # reset
+        db.commit()
+
+        return jsonify({
+            'api_key': app_entry.api_key,
+            'refresh_token': app_entry.refresh_token,
+            'expires_at': app_entry.expires_at.isoformat(),
+            'tenant_id': app_entry.tenant_id,
+            'message': f'API key rotated successfully. Old key ({old_key[:10]}...) is now invalid.',
+        }), 200
+    finally:
+        db.close()
+
+
+
+@app.route('/api/verify-key', methods=['POST'])
+def verify_api_key_info():
+    """Verify an API key and return the tenant name.
+
+    Called by the SaaS app to check if a key is valid and active.
+    Returns tenant info or an error if expired/invalid.
+    """
+    data = request.get_json(force=True) or {}
+    api_key = data.get('api_key', '').strip()
+    if not api_key:
+        return jsonify({'error': 'api_key is required'}), 400
+
+    db = get_db()
+    try:
+        app_entry = db.query(AuthorizedApp).filter_by(api_key=api_key).first()
+        if not app_entry:
+            return jsonify({
+                'valid': False,
+                'error': 'Invalid API key',
+                'message': 'API key not recognised.',
+            }), 401
+
+        tenant = db.query(Tenant).filter_by(id=app_entry.tenant_id).first()
+        tenant_name = tenant.name if tenant else 'Unknown'
+        tenant_slug = tenant.slug if tenant else 'unknown'
+
+        if not app_entry.is_active:
+            return jsonify({
+                'valid': False,
+                'error': 'API key disabled',
+                'message': 'This API key has been disabled by an administrator.',
+                'tenant_name': tenant_name,
+                'tenant_slug': tenant_slug,
+            }), 403
+
+        if app_entry.expires_at and app_entry.expires_at < datetime.utcnow():
+            return jsonify({
+                'valid': False,
+                'error': 'API key expired',
+                'message': 'Your API key has expired. Use your refresh token at POST /api/refresh-key to generate a new one.',
+                'tenant_name': tenant_name,
+                'tenant_slug': tenant_slug,
+                'expired_at': app_entry.expires_at.isoformat(),
+            }), 401
+
+        return jsonify({
+            'valid': True,
+            'tenant_name': tenant_name,
+            'tenant_slug': tenant_slug,
+            'tenant_id': app_entry.tenant_id,
+            'expires_at': app_entry.expires_at.isoformat() if app_entry.expires_at else None,
+            'is_admin': bool(app_entry.is_admin),
+        }), 200
+    finally:
+        db.close()
 
 
 # ---- LLM Provider Management ------------------------------------------------

@@ -2623,6 +2623,8 @@ const API_ENDPOINTS = [
     { method: 'DELETE', path: '/api/admin/tenants/:id/keys/:keyId', desc: 'Revoke tenant API key' },
     // Provisioning (SaaS integration — uses X-Provisioning-Key header)
     { method: 'POST', path: '/api/provision', desc: 'Auto-provision a new tenant (master key)' },
+    { method: 'POST', path: '/api/refresh-key', desc: 'Rotate API key using refresh token' },
+    { method: 'POST', path: '/api/verify-key', desc: 'Verify API key and get tenant info' },
 ];
 
 function populateApiDocs() {

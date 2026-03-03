@@ -261,6 +261,9 @@ def init_db():
         # AuthorizedApp: add tenant_id + is_admin
         'ALTER TABLE authorized_apps ADD COLUMN tenant_id INTEGER NOT NULL DEFAULT 1',
         'ALTER TABLE authorized_apps ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT FALSE',
+        # API key expiration & refresh tokens
+        'ALTER TABLE authorized_apps ADD COLUMN expires_at TIMESTAMP',
+        'ALTER TABLE authorized_apps ADD COLUMN refresh_token VARCHAR(100) UNIQUE',
         # Older app migrations
         'ALTER TABLE chat_history ALTER COLUMN document_id DROP NOT NULL',
         'ALTER TABLE chat_history ADD COLUMN tokens_used INTEGER DEFAULT 0',
@@ -317,9 +320,15 @@ class AuthorizedApp(Base):
     is_admin = Column(Boolean, default=False)  # admin keys can manage tenants
     created_at = Column(DateTime, default=datetime.utcnow)
     last_used = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)       # NULL = never expires
+    refresh_token = Column(String(100), unique=True, nullable=True)  # for key rotation
 
     # Relationship
     tenant = relationship("Tenant", back_populates="authorized_apps")
+
+    @property
+    def is_expired(self):
+        return self.expires_at is not None and self.expires_at < datetime.utcnow()
 
     def to_dict(self):
         return {
@@ -331,6 +340,8 @@ class AuthorizedApp(Base):
             'is_admin': self.is_admin,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'last_used': self.last_used.isoformat() if self.last_used else None,
+            'expires_at': self.expires_at.isoformat() if self.expires_at else None,
+            'is_expired': self.is_expired,
         }
 
 
