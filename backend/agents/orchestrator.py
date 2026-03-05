@@ -5,7 +5,6 @@ Pipeline: synopsis → compliance → security → risk → framework → gap_de
                                                                                             ↑ receives synopsis + upstream findings
 Key features:
 - Synopsis agent runs first, feeds context to all downstream agents
-- Hybrid model routing: Haiku for structured extraction, Sonnet for reasoning
 - Gap detection receives upstream findings to avoid duplicates
 - Best practices receives gap detections to avoid repeats
 - Suggestions agent receives ALL upstream findings

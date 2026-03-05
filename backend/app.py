@@ -1227,7 +1227,7 @@ def chat_fill_document():
         # Use the same LLM client as chat
         fill_llm = get_llm_client()
 
-        result = document_filler.fill_document(file_path, filename, fill_llm)
+        result = document_filler.fill_document(file_path, filename, fill_llm, tenant_id=_tenant_id())
 
         used_tokens = fill_llm.total_input_tokens + fill_llm.total_output_tokens
 
