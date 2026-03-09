@@ -121,7 +121,7 @@ def register_middleware(app):
             return response
 
         is_success = response.status_code < 400
-        key = 'data' if request.method == 'GET' else 'message'
+        key = 'message' if request.method == 'GET' else 'data'
         wrapped = {'success': is_success, key: data}
 
         response.set_data(json.dumps(wrapped))
