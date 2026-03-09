@@ -1,11 +1,9 @@
 """
 Chat File Store — Persistent session store for files uploaded in Knowledge Chat.
 
-Uses a persistent ChromaDB collection (shared across Gunicorn workers) instead
-of in-memory storage so all workers can access uploaded file data.
-
+Uses pgvector (chat_file_chunks table) for semantic search of uploaded files.
 Sessions are stored on disk under UPLOAD_FOLDER/_chat_sessions/<session_id>/
-with a metadata JSON file and a persistent ChromaDB collection.
+with a metadata JSON file. Chunks + embeddings go into PostgreSQL.
 """
 
 import os
@@ -13,11 +11,13 @@ import json
 import time
 import uuid
 import shutil
-import chromadb
-from chromadb.config import Settings
-from extractor import extract_text
+
+from embedding import embed_texts, embed_query
 from vector_store import _chunk_text, add_document, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
+from models import SessionLocal, ChatFileChunk
 from config import Config
+from extractor import extract_text
+from sqlalchemy import text as sa_text
 
 SESSION_TTL = 3600  # 1 hour
 _SESSIONS_DIR = os.path.join(Config.UPLOAD_FOLDER, '_chat_sessions')
@@ -47,7 +47,6 @@ def _cleanup_expired():
 def upload_file(file_path: str, filename: str) -> dict:
     """
     Extract, chunk, and index a file for temporary chat use.
-    All data persisted to disk so all Gunicorn workers can access it.
     Returns { session_id, filename, chunk_count, char_count }.
     """
     _cleanup_expired()
@@ -64,20 +63,21 @@ def upload_file(file_path: str, filename: str) -> dict:
     sdir = _session_dir(session_id)
     os.makedirs(sdir, exist_ok=True)
 
-    # Create persistent ChromaDB collection for this session
-    chroma_dir = os.path.join(sdir, 'chroma')
-    client = chromadb.PersistentClient(
-        path=chroma_dir,
-        settings=Settings(anonymized_telemetry=False),
-    )
-    collection = client.get_or_create_collection(
-        name="chat_upload",
-        metadata={"hnsw:space": "cosine"},
-    )
-
-    ids = [f"tmp_chunk_{i}" for i in range(len(chunks))]
-    metadatas = [{"chunk_index": i, "filename": filename} for i in range(len(chunks))]
-    collection.add(documents=chunks, ids=ids, metadatas=metadatas)
+    # Embed chunks and store in pgvector
+    embeddings = embed_texts(chunks)
+    db = SessionLocal()
+    try:
+        for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
+            db.add(ChatFileChunk(
+                session_id=session_id,
+                filename=filename,
+                chunk_index=i,
+                content=chunk,
+                embedding=emb,
+            ))
+        db.commit()
+    finally:
+        db.close()
 
     # Persist the uploaded file so we can save to KB later
     file_copy = os.path.join(sdir, filename)
@@ -117,52 +117,49 @@ def _load_meta(session_id: str) -> dict | None:
         return None
 
 
-def _get_collection(session_id: str):
-    """Get the ChromaDB collection for a session."""
-    chroma_dir = os.path.join(_session_dir(session_id), 'chroma')
-    if not os.path.exists(chroma_dir):
-        return None
-    client = chromadb.PersistentClient(
-        path=chroma_dir,
-        settings=Settings(anonymized_telemetry=False),
-    )
-    try:
-        return client.get_collection("chat_upload")
-    except Exception:
-        return None
-
-
 def search_file(session_id: str, query: str, top_k: int = 5) -> list[dict]:
     """Search the uploaded file's chunks for relevant content."""
     meta = _load_meta(session_id)
     if not meta:
         return []
 
-    collection = _get_collection(session_id)
-    if not collection or collection.count() == 0:
-        return []
+    db = SessionLocal()
+    try:
+        count = db.query(ChatFileChunk).filter(
+            ChatFileChunk.session_id == session_id
+        ).count()
+        if count == 0:
+            return []
 
-    results = collection.query(
-        query_texts=[query],
-        n_results=min(top_k, collection.count()),
-    )
+        query_embedding = embed_query(query)
 
-    hits = []
-    docs = results.get("documents", [[]])[0]
-    metas = results.get("metadatas", [[]])[0]
-    dists = results.get("distances", [[]])[0]
-
-    for i in range(len(docs)):
-        m = metas[i] if i < len(metas) else {}
-        hits.append({
-            "text": docs[i],
-            "filename": f"[Uploaded] {meta['filename']}",
-            "doc_id": -1,
-            "chunk_index": m.get("chunk_index", i),
-            "distance": dists[i] if i < len(dists) else None,
-            "source": "uploaded_file",
+        sql = """
+            SELECT content, filename, chunk_index,
+                   embedding <=> :query_vec AS distance
+            FROM chat_file_chunks
+            WHERE session_id = :sid
+            ORDER BY distance
+            LIMIT :top_k
+        """
+        result = db.execute(sa_text(sql), {
+            "sid": session_id,
+            "query_vec": str(query_embedding),
+            "top_k": top_k,
         })
-    return hits
+
+        hits = []
+        for row in result:
+            hits.append({
+                "text": row[0],
+                "filename": f"[Uploaded] {meta['filename']}",
+                "doc_id": -1,
+                "chunk_index": row[2] or 0,
+                "distance": float(row[3]) if row[3] is not None else None,
+                "source": "uploaded_file",
+            })
+        return hits
+    finally:
+        db.close()
 
 
 def get_session(session_id: str) -> dict | None:
@@ -178,7 +175,7 @@ def get_session(session_id: str) -> dict | None:
     }
 
 
-def save_to_kb(session_id: str, db_session) -> dict:
+def save_to_kb(session_id: str, db_session, tenant_id: int = 1) -> dict:
     """
     Persist the uploaded file to the permanent Knowledge Base.
     Creates a Document record + indexes in the vector store.
@@ -213,12 +210,13 @@ def save_to_kb(session_id: str, db_session) -> dict:
         file_size=file_size,
         status='completed',
         is_saved=True,
+        tenant_id=tenant_id,
     )
     db_session.add(doc)
     db_session.flush()  # get doc.id
 
     # Index in vector store
-    chunk_count = add_document(doc.id, filename, meta['text'])
+    chunk_count = add_document(tenant_id, doc.id, filename, meta['text'])
 
     db_session.commit()
 
@@ -234,7 +232,20 @@ def save_to_kb(session_id: str, db_session) -> dict:
 
 
 def clear_session(session_id: str):
-    """Remove a session and all its files."""
+    """Remove a session and all its files + DB chunks."""
+    # Remove from database
+    db = SessionLocal()
+    try:
+        db.query(ChatFileChunk).filter(
+            ChatFileChunk.session_id == session_id
+        ).delete()
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+    # Remove from disk
     sdir = _session_dir(session_id)
     if os.path.exists(sdir):
         try:

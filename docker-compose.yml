@@ -1,9 +1,9 @@
 version: '3.8'
 
 services:
-  # ---- PostgreSQL ----
+  # ---- PostgreSQL + pgvector ----
   doc-analyzer-db:
-    image: postgres:16
+    image: pgvector/pgvector:pg16
     container_name: doc-analyzer-db-v2
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
@@ -44,8 +44,7 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-mistral:7b}
       PROVISIONING_MASTER_KEY: ${PROVISIONING_MASTER_KEY:-CHANGE-ME-set-PROVISIONING_MASTER_KEY-in-env}
-      CHROMA_HOST: doc-analyzer-chromadb
-      CHROMA_PORT: "8000"
+      CELERY_BROKER_URL: redis://doc-analyzer-redis:6379/0
     ports:
       - "5002:5000" # Dev only — remove in production
     healthcheck:
@@ -56,10 +55,11 @@ services:
       start_period: 15s
     volumes:
       - doc_analyzer_v2_uploads:/app/uploads
+      - doc_analyzer_v2_model_cache:/root/.cache
     depends_on:
       doc-analyzer-db:
         condition: service_healthy
-      doc-analyzer-chromadb:
+      doc-analyzer-redis:
         condition: service_started
     networks:
       - doc-analyzer-v2
@@ -93,18 +93,52 @@ services:
       - doc-analyzer-v2
     restart: unless-stopped
 
-  # ---- ChromaDB Server (Vector Store) ----
-  doc-analyzer-chromadb:
-    image: chromadb/chroma:0.4.24
-    container_name: doc-analyzer-chromadb
-    environment:
-      ANONYMIZED_TELEMETRY: 'False'
-      IS_PERSISTENT: 'TRUE'
-      PERSIST_DIRECTORY: /chroma/chroma
-    volumes:
-      - doc_analyzer_v2_chromadb:/chroma/chroma
+  # ---- Redis (Celery Broker) ----
+  doc-analyzer-redis:
+    image: redis:7-alpine
+    container_name: doc-analyzer-redis
     ports:
-      - "8100:8000" # Dev only — remove in production
+      - "6380:6379" # Dev only — remove in production
+    volumes:
+      - doc_analyzer_v2_redis:/data
+    networks:
+      - doc-analyzer-v2
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---- Celery Worker (Background Task Processing) ----
+  doc-analyzer-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: doc-analyzer-worker
+    command: [ "celery", "-A", "celery_app", "worker", "--loglevel=info", "--concurrency=2" ]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@doc-analyzer-db:5432/${POSTGRES_DB:-document_analyzer}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_BEARER_TOKEN_BEDROCK: ${AWS_BEARER_TOKEN_BEDROCK:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      BEDROCK_MODEL_ID: ${BEDROCK_MODEL_ID:-apac.amazon.nova-lite-v1:0}
+      UPLOAD_FOLDER: /app/uploads
+      ANONYMIZED_TELEMETRY: 'False'
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-mistral:7b}
+      CELERY_BROKER_URL: redis://doc-analyzer-redis:6379/0
+    volumes:
+      - doc_analyzer_v2_uploads:/app/uploads
+      - doc_analyzer_v2_model_cache:/root/.cache
+    depends_on:
+      doc-analyzer-db:
+        condition: service_healthy
+      doc-analyzer-redis:
+        condition: service_started
     networks:
       - doc-analyzer-v2
     restart: unless-stopped
@@ -137,9 +171,11 @@ volumes:
     driver: local
   doc_analyzer_v2_uploads:
     driver: local
-  doc_analyzer_v2_chromadb:
-    driver: local
   doc_analyzer_v2_ollama:
+    driver: local
+  doc_analyzer_v2_redis:
+    driver: local
+  doc_analyzer_v2_model_cache:
     driver: local
   doc_analyzer_v2_pgadmin:
     driver: local

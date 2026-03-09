@@ -1,54 +1,15 @@
 """
-Framework Store — ChromaDB collections for compliance framework standards (per-tenant).
+Framework Store — pgvector-based storage for compliance framework standards (per-tenant).
 
-Each tenant × framework combination gets its own ChromaDB collection:
-  fw_<tenant_id>_<FRAMEWORK_KEY>
-
-This ensures that tenant A's uploaded ISO27001 PDF is never visible to tenant B.
+Each framework chunk is stored in the framework_chunks table with tenant_id
+and framework_key for isolation.
 """
 
-import os
-import threading
-import chromadb
-from chromadb.config import Settings
-from config import Config
+from models import SessionLocal, FrameworkChunk
+from embedding import embed_texts, embed_query
+from sqlalchemy import text as sa_text
 
 FRAMEWORK_KEYS = ('CIS', 'GDPR', 'HIPAA', 'ISO27001', 'NIST', 'SOC2')
-
-# ---- Singleton client --------------------------------------------------------
-_client = None
-_client_lock = threading.Lock()
-
-
-def _get_client():
-    global _client
-    with _client_lock:
-        if _client is None:
-            if Config.CHROMA_HOST:
-                # Client/server mode — shared ChromaDB server (same as vector_store)
-                _client = chromadb.HttpClient(
-                    host=Config.CHROMA_HOST,
-                    port=Config.CHROMA_PORT,
-                    settings=Settings(anonymized_telemetry=False),
-                )
-            else:
-                # Embedded mode — local PersistentClient (dev fallback)
-                persist_dir = os.path.join(Config.CHROMADB_PATH, "frameworks")
-                os.makedirs(persist_dir, exist_ok=True)
-                _client = chromadb.PersistentClient(
-                    path=persist_dir,
-                    settings=Settings(anonymized_telemetry=False),
-                )
-    return _client
-
-
-def _get_collection(tenant_id: int, framework_key: str):
-    """Get or create the per-tenant collection for a specific framework."""
-    client = _get_client()
-    return client.get_or_create_collection(
-        name=f"fw_{tenant_id}_{framework_key}",
-        metadata={"hnsw:space": "cosine"},
-    )
 
 
 # ---- Chunking ----------------------------------------------------------------
@@ -73,87 +34,106 @@ def _chunk_text(text: str) -> list[str]:
 # ---- Public API --------------------------------------------------------------
 
 def add_framework(tenant_id: int, framework_key: str, version: str, filename: str, text: str) -> int:
-    """Chunk and embed a framework document into the tenant's collection. Returns chunk count."""
-    col = _get_collection(tenant_id, framework_key)
+    """Chunk, embed, and store a framework document. Returns chunk count."""
+    db = SessionLocal()
+    try:
+        chunks = _chunk_text(text)
+        if not chunks:
+            return 0
 
-    chunks = _chunk_text(text)
-    if not chunks:
-        return 0
+        # Batch embed all chunks
+        embeddings = embed_texts(chunks)
 
-    # Use version+filename for unique IDs so multiple versions coexist
-    prefix = f"{framework_key}_{version}_{filename}"
-    ids = [f"{prefix}_chunk{i}" for i in range(len(chunks))]
-    metadatas = [
-        {
-            "framework_key": framework_key,
-            "version": version,
-            "filename": filename,
-            "chunk_index": i,
-        }
-        for i in range(len(chunks))
-    ]
+        for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
+            db.add(FrameworkChunk(
+                tenant_id=tenant_id,
+                framework_key=framework_key,
+                version=version,
+                filename=filename,
+                chunk_index=i,
+                content=chunk,
+                embedding=emb,
+            ))
 
-    col.add(documents=chunks, ids=ids, metadatas=metadatas)
-    print(f"📋 [tenant={tenant_id}] Indexed {len(chunks)} chunks for {framework_key} v{version} ({filename})")
-    return len(chunks)
+        db.commit()
+        print(f"📋 [tenant={tenant_id}] Indexed {len(chunks)} chunks for {framework_key} v{version} ({filename})")
+        return len(chunks)
+    finally:
+        db.close()
 
 
 def remove_framework(tenant_id: int, framework_key: str, version: str, filename: str):
-    """Remove all chunks for a specific framework version/file from the tenant's collection."""
-    col = _get_collection(tenant_id, framework_key)
+    """Remove all chunks for a specific framework version/file."""
+    db = SessionLocal()
     try:
-        col.delete(where={
-            "$and": [
-                {"version": {"$eq": version}},
-                {"filename": {"$eq": filename}},
-            ]
-        })
-        print(f"🗑️ [tenant={tenant_id}] Removed chunks for {framework_key} v{version} ({filename})")
+        deleted = db.query(FrameworkChunk).filter(
+            FrameworkChunk.tenant_id == tenant_id,
+            FrameworkChunk.framework_key == framework_key,
+            FrameworkChunk.version == version,
+            FrameworkChunk.filename == filename,
+        ).delete()
+        db.commit()
+        if deleted:
+            print(f"🗑️ [tenant={tenant_id}] Removed {deleted} chunks for {framework_key} v{version} ({filename})")
     except Exception as e:
+        db.rollback()
         print(f"Warning: could not remove framework chunks (tenant={tenant_id}): {e}")
+    finally:
+        db.close()
 
 
 def search_framework(tenant_id: int, framework_key: str, query: str, top_k: int = 8) -> list[dict]:
-    """Search within a tenant's specific framework collection for relevant sections."""
-    col = _get_collection(tenant_id, framework_key)
-    if col.count() == 0:
-        return []
+    """Search within a tenant's specific framework for relevant sections."""
+    db = SessionLocal()
+    try:
+        count = db.query(FrameworkChunk).filter(
+            FrameworkChunk.tenant_id == tenant_id,
+            FrameworkChunk.framework_key == framework_key,
+        ).count()
+        if count == 0:
+            return []
 
-    results = col.query(
-        query_texts=[query],
-        n_results=min(top_k, col.count()),
-    )
+        query_embedding = embed_query(query)
 
-    hits = []
-    docs = results.get("documents", [[]])[0]
-    metas = results.get("metadatas", [[]])[0]
-    dists = results.get("distances", [[]])[0]
-
-    for i in range(len(docs)):
-        meta = metas[i] if i < len(metas) and metas[i] else {}
-        hits.append({
-            "text": docs[i],
-            "version": meta.get("version", "unknown"),
-            "filename": meta.get("filename", "unknown"),
-            "distance": dists[i] if i < len(dists) else None,
+        sql = """
+            SELECT content, version, filename,
+                   embedding <=> :query_vec AS distance
+            FROM framework_chunks
+            WHERE tenant_id = :tid AND framework_key = :fk
+            ORDER BY distance
+            LIMIT :top_k
+        """
+        result = db.execute(sa_text(sql), {
+            "tid": tenant_id,
+            "fk": framework_key,
+            "query_vec": str(query_embedding),
+            "top_k": top_k,
         })
-    return hits
+
+        hits = []
+        for row in result:
+            hits.append({
+                "text": row[0],
+                "version": row[1] or "unknown",
+                "filename": row[2] or "unknown",
+                "distance": float(row[3]) if row[3] is not None else None,
+            })
+        return hits
+    finally:
+        db.close()
 
 
 def get_uploaded_frameworks(tenant_id: int) -> dict:
-    """
-    Return a dict: { framework_key: bool } indicating which frameworks
-    the specified tenant has at least one document indexed for.
-    """
-    client = _get_client()
-    status = {}
-    for key in FRAMEWORK_KEYS:
-        try:
-            col = client.get_or_create_collection(
-                name=f"fw_{tenant_id}_{key}",
-                metadata={"hnsw:space": "cosine"},
-            )
-            status[key] = col.count() > 0
-        except Exception:
-            status[key] = False
-    return status
+    """Return { framework_key: bool } indicating which frameworks have indexed content."""
+    db = SessionLocal()
+    try:
+        status = {}
+        for key in FRAMEWORK_KEYS:
+            count = db.query(FrameworkChunk).filter(
+                FrameworkChunk.tenant_id == tenant_id,
+                FrameworkChunk.framework_key == key,
+            ).count()
+            status[key] = count > 0
+        return status
+    finally:
+        db.close()

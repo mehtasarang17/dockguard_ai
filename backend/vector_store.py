@@ -1,71 +1,22 @@
 """
-Vector Store — ChromaDB-based knowledge base for semantic document search.
+Vector Store — pgvector-based knowledge base for semantic document search.
 
-Per-tenant isolation: each tenant gets its own ChromaDB collection `kb_<tenant_id>`.
+Per-tenant isolation via SQL WHERE tenant_id = ?.
 
 When a user clicks "Save to Knowledge Base", the document text is:
-1. Split into overlapping chunks (~500 chars)
-2. Embedded and stored in a persistent ChromaDB collection
-3. Tagged with document ID + filename for citation tracking
+1. Split into overlapping chunks (markdown-aware)
+2. Embedded via sentence-transformers (all-MiniLM-L6-v2, 384 dims)
+3. Inserted into the kb_chunks table with pgvector
 
-Chat queries search across ALL saved documents for that tenant and return the most
-relevant chunks along with source metadata for citations.
+Chat queries search across ALL saved documents for that tenant using
+cosine distance (vector <=> operator) and return the most relevant
+chunks along with source metadata for citations.
 """
 
-import os
-import threading
-import chromadb
-from chromadb.config import Settings
-from config import Config
+from models import SessionLocal, KBChunk
+from embedding import embed_texts, embed_query
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
-
-
-# ---- Per-tenant collection cache (thread-safe) --------------------------------
-_client = None
-_client_lock = threading.Lock()
-_collections: dict = {}
-_collections_lock = threading.Lock()
-
-
-def _get_client():
-    global _client
-    with _client_lock:
-        if _client is None:
-            if Config.CHROMA_HOST:
-                # Client/server mode — connect to separate ChromaDB container
-                _client = chromadb.HttpClient(
-                    host=Config.CHROMA_HOST,
-                    port=Config.CHROMA_PORT,
-                    settings=Settings(anonymized_telemetry=False),
-                )
-                print(f"🔗 ChromaDB connected to {Config.CHROMA_HOST}:{Config.CHROMA_PORT}")
-            else:
-                # Embedded mode — local PersistentClient (dev fallback)
-                persist_dir = Config.CHROMADB_PATH
-                os.makedirs(persist_dir, exist_ok=True)
-                _client = chromadb.PersistentClient(
-                    path=persist_dir,
-                    settings=Settings(anonymized_telemetry=False),
-                )
-    return _client
-
-
-def _get_collection(tenant_id: int):
-    """Return (and cache) the ChromaDB collection for the given tenant."""
-    with _collections_lock:
-        if tenant_id not in _collections:
-            client = _get_client()
-            _collections[tenant_id] = client.get_or_create_collection(
-                name=f"kb_{tenant_id}",
-                metadata={"hnsw:space": "cosine"},
-            )
-        return _collections[tenant_id]
-
-
-def _invalidate_collection_cache(tenant_id: int):
-    """Force re-fetch of the collection on next access (e.g. after a reset)."""
-    with _collections_lock:
-        _collections.pop(tenant_id, None)
+from sqlalchemy import text as sa_text
 
 
 # ---- Chunking ----------------------------------------------------------------
@@ -102,10 +53,9 @@ def _chunk_text(text: str, chunk_size: int = None, overlap: int = None) -> list[
     )
     final_splits = recursive_splitter.split_documents(md_header_splits)
 
-    # 3. Format final string output, prepending header context so embedding model understands context
+    # 3. Format final string output, prepending header context
     chunks = []
     for doc in final_splits:
-        # Build context string like "[Header 1 > Header 2]"
         context_parts = []
         for h in ["Header 1", "Header 2", "Header 3", "Header 4"]:
             if h in doc.metadata:
@@ -126,36 +76,54 @@ def _chunk_text(text: str, chunk_size: int = None, overlap: int = None) -> list[
 
 def add_document(tenant_id: int, doc_id: int, filename: str, text: str,
                  chunk_size: int = None, overlap: int = None) -> int:
-    """Chunk and embed a document into the tenant's vector store. Returns chunk count."""
-    col = _get_collection(tenant_id)
+    """Chunk, embed, and store a document in the tenant's KB. Returns chunk count."""
+    db = SessionLocal()
+    try:
+        # Remove any existing chunks for this doc (re-save scenario)
+        remove_document(tenant_id, doc_id)
 
-    # Remove any existing chunks for this doc (re-save scenario)
-    remove_document(tenant_id, doc_id)
+        chunks = _chunk_text(text, chunk_size=chunk_size, overlap=overlap)
+        if not chunks:
+            return 0
 
-    chunks = _chunk_text(text, chunk_size=chunk_size, overlap=overlap)
-    if not chunks:
-        return 0
+        # Batch embed all chunks
+        embeddings = embed_texts(chunks)
 
-    ids = [f"doc{doc_id}_chunk{i}" for i in range(len(chunks))]
-    metadatas = [
-        {"doc_id": doc_id, "filename": filename, "chunk_index": i}
-        for i in range(len(chunks))
-    ]
+        # Bulk insert
+        for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
+            db.add(KBChunk(
+                tenant_id=tenant_id,
+                doc_id=doc_id,
+                filename=filename,
+                chunk_index=i,
+                content=chunk,
+                embedding=emb,
+            ))
 
-    col.add(documents=chunks, ids=ids, metadatas=metadatas)
-    print(f"📚 [tenant={tenant_id}] Indexed {len(chunks)} chunks for document {doc_id} ({filename})"
-          f" [size={chunk_size or DEFAULT_CHUNK_SIZE}, overlap={overlap or DEFAULT_CHUNK_OVERLAP}]")
-    return len(chunks)
+        db.commit()
+        print(f"📚 [tenant={tenant_id}] Indexed {len(chunks)} chunks for document {doc_id} ({filename})"
+              f" [size={chunk_size or DEFAULT_CHUNK_SIZE}, overlap={overlap or DEFAULT_CHUNK_OVERLAP}]")
+        return len(chunks)
+    finally:
+        db.close()
 
 
 def remove_document(tenant_id: int, doc_id: int):
-    """Remove all chunks for a given document from the tenant's vector store."""
-    col = _get_collection(tenant_id)
+    """Remove all chunks for a given document from the tenant's KB."""
+    db = SessionLocal()
     try:
-        col.delete(where={"doc_id": doc_id})
-        print(f"🗑️ [tenant={tenant_id}] Removed chunks for document {doc_id}")
+        deleted = db.query(KBChunk).filter(
+            KBChunk.tenant_id == tenant_id,
+            KBChunk.doc_id == doc_id,
+        ).delete()
+        db.commit()
+        if deleted:
+            print(f"🗑️ [tenant={tenant_id}] Removed {deleted} chunks for document {doc_id}")
     except Exception as e:
+        db.rollback()
         print(f"Warning: could not remove doc {doc_id} from vector store (tenant={tenant_id}): {e}")
+    finally:
+        db.close()
 
 
 def search(tenant_id: int, query: str, top_k: int = 6, filters: dict = None) -> list[dict]:
@@ -164,75 +132,91 @@ def search(tenant_id: int, query: str, top_k: int = 6, filters: dict = None) -> 
     filters: dict, e.g. {"filename_ne": "Book5.xlsx"} -> excludes that file.
     Returns list of dicts with keys: text, filename, doc_id, chunk_index, distance.
     """
-    col = _get_collection(tenant_id)
-    if col.count() == 0:
-        return []
+    db = SessionLocal()
+    try:
+        # Check if any chunks exist
+        count = db.query(KBChunk).filter(KBChunk.tenant_id == tenant_id).count()
+        if count == 0:
+            return []
 
-    where_clause = {}
-    if filters and "filename_ne" in filters:
-        where_clause = {"filename": {"$ne": filters["filename_ne"]}}
+        query_embedding = embed_query(query)
 
-    results = col.query(
-        query_texts=[query],
-        n_results=min(top_k, col.count()),
-        where=where_clause if where_clause else None
-    )
+        # Build the SQL query with cosine distance
+        sql = """
+            SELECT content, filename, doc_id, chunk_index,
+                   embedding <=> :query_vec AS distance
+            FROM kb_chunks
+            WHERE tenant_id = :tid
+        """
+        params = {"tid": tenant_id, "query_vec": str(query_embedding)}
 
-    hits = []
-    docs = results.get("documents", [[]])[0]
-    metas = results.get("metadatas", [[]])[0]
-    dists = results.get("distances", [[]])[0]
+        if filters and "filename_ne" in filters:
+            sql += " AND filename != :exclude_fn"
+            params["exclude_fn"] = filters["filename_ne"]
 
-    for i in range(len(docs)):
-        meta = metas[i] if i < len(metas) and metas[i] else {}
-        hits.append({
-            "text": docs[i],
-            "filename": meta.get("filename", "unknown"),
-            "doc_id": meta.get("doc_id", -1),
-            "chunk_index": meta.get("chunk_index", i),
-            "distance": dists[i] if i < len(dists) else None,
-        })
-    return hits
+        sql += " ORDER BY distance LIMIT :top_k"
+        params["top_k"] = top_k
+
+        result = db.execute(sa_text(sql), params)
+
+        hits = []
+        for row in result:
+            hits.append({
+                "text": row[0],
+                "filename": row[1] or "unknown",
+                "doc_id": row[2] or -1,
+                "chunk_index": row[3] or 0,
+                "distance": float(row[4]) if row[4] is not None else None,
+            })
+        return hits
+    finally:
+        db.close()
 
 
 def get_stats(tenant_id: int) -> dict:
     """Return knowledge base statistics for a tenant."""
-    col = _get_collection(tenant_id)
-    total_chunks = col.count()
+    db = SessionLocal()
+    try:
+        total_chunks = db.query(KBChunk).filter(KBChunk.tenant_id == tenant_id).count()
 
-    if total_chunks == 0:
-        return {"total_documents": 0, "total_chunks": 0, "documents": []}
+        if total_chunks == 0:
+            return {"total_documents": 0, "total_chunks": 0, "documents": []}
 
-    all_data = col.get(include=["metadatas"])
-    doc_map = {}
-    for meta in all_data["metadatas"]:
-        if not meta:
-            continue
-        did = meta.get("doc_id")
-        if did is None:
-            continue
-        if did not in doc_map:
-            doc_map[did] = {"doc_id": did, "filename": meta.get("filename", "unknown"), "chunks": 0}
-        doc_map[did]["chunks"] += 1
+        # Group by doc_id
+        from sqlalchemy import func
+        rows = db.query(
+            KBChunk.doc_id,
+            KBChunk.filename,
+            func.count(KBChunk.id).label("chunks"),
+        ).filter(
+            KBChunk.tenant_id == tenant_id
+        ).group_by(KBChunk.doc_id, KBChunk.filename).all()
 
-    return {
-        "total_documents": len(doc_map),
-        "total_chunks": total_chunks,
-        "documents": list(doc_map.values()),
-    }
+        documents = [
+            {"doc_id": r[0], "filename": r[1] or "unknown", "chunks": r[2]}
+            for r in rows
+        ]
+
+        return {
+            "total_documents": len(documents),
+            "total_chunks": total_chunks,
+            "documents": documents,
+        }
+    finally:
+        db.close()
 
 
 def get_document_text(tenant_id: int, filename: str) -> str:
     """Retrieve full text of a document by filename from the tenant's KB."""
-    col = _get_collection(tenant_id)
-    results = col.get(where={"filename": filename}, include=["documents", "metadatas"])
+    db = SessionLocal()
+    try:
+        chunks = db.query(KBChunk).filter(
+            KBChunk.tenant_id == tenant_id,
+            KBChunk.filename == filename,
+        ).order_by(KBChunk.chunk_index).all()
 
-    if not results['documents']:
-        return ""
-
-    chunks = []
-    for doc, meta in zip(results['documents'], results['metadatas']):
-        chunks.append((meta.get('chunk_index', 0), doc))
-
-    chunks.sort(key=lambda x: x[0])
-    return "\n".join([c[1] for c in chunks])
+        if not chunks:
+            return ""
+        return "\n".join(c.content for c in chunks)
+    finally:
+        db.close()

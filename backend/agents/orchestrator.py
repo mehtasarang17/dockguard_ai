@@ -1,24 +1,29 @@
 """
 LangGraph-based orchestration pipeline for document analysis.
 
-Pipeline: synopsis → compliance → security → risk → framework → gap_detection → scoring → best_practices → suggestions → finalize
-                                                                                            ↑ receives synopsis + upstream findings
+Pipeline (parallelized):
+  synopsis → [compliance, security, risk, framework] (parallel)
+           → gap_detection → scoring → best_practices → suggestions → finalize
+
 Key features:
 - Synopsis agent runs first, feeds context to all downstream agents
+- Agents 1-4 (compliance, security, risk, framework) run IN PARALLEL via ThreadPoolExecutor
 - Gap detection receives upstream findings to avoid duplicates
 - Best practices receives gap detections to avoid repeats
 - Suggestions agent receives ALL upstream findings
 - Finalize uses LLM to synthesize deduplicated recommendations
+- Batch analysis processes documents in parallel (configurable concurrency)
 """
 
 import json
 import time
 import traceback
 from typing import TypedDict, List, Dict, Optional, Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from langgraph.graph import StateGraph, END
 from agents.bedrock_client import BedrockClient
-from agents.llm_factory import get_llm_client
+from agents.llm_factory import get_llm_client, get_token_tracker
 from agents.prompts import (
     synopsis_prompt,
     compliance_prompt,
@@ -36,6 +41,10 @@ from agents.prompts import (
     multi_doc_synthesis_prompt,
 )
 import framework_store
+
+# ---- Constants ---------------------------------------------------------------
+MAX_PARALLEL_AGENTS = 4      # max concurrent LLM calls per document analysis
+MAX_PARALLEL_BATCH_DOCS = 3  # max concurrent document analyses in a batch
 
 # ---- State -------------------------------------------------------------------
 
@@ -84,8 +93,8 @@ class Orchestrator:
             uploaded_frameworks: dict = None) -> dict:
         """Run the full analysis pipeline for a single document."""
         start = time.time()
-        llm = get_llm_client()  # Factory: returns Bedrock or Ollama based on settings
-        llm.reset_tokens()
+        tracker = get_token_tracker()
+        llm = get_llm_client()  # Pooled singleton
         if uploaded_frameworks is None:
             uploaded_frameworks = {k: False for k in framework_store.FRAMEWORK_KEYS}
 
@@ -116,11 +125,14 @@ class Orchestrator:
             "errors": [],
         }
 
-        result = self.graph.invoke(initial_state, config={"configurable": {"llm": llm}}) # Pass llm to graph
+        result = self.graph.invoke(
+            initial_state,
+            config={"configurable": {"llm": llm, "tracker": tracker}},
+        )
         result["processing_time"] = round(time.time() - start, 2)
-        result["input_tokens"] = llm.total_input_tokens
-        result["output_tokens"] = llm.total_output_tokens
-        result["total_tokens"] = llm.total_input_tokens + llm.total_output_tokens
+        result["input_tokens"] = tracker.input_tokens
+        result["output_tokens"] = tracker.output_tokens
+        result["total_tokens"] = tracker.total_tokens
         return result
 
     # ---- Graph builder -------------------------------------------------------
@@ -128,10 +140,7 @@ class Orchestrator:
         g = StateGraph(AnalysisState)
 
         g.add_node("synopsis_agent", self._synopsis_agent)
-        g.add_node("compliance_agent", self._compliance_agent)
-        g.add_node("security_agent", self._security_agent)
-        g.add_node("risk_agent", self._risk_agent)
-        g.add_node("framework_agent", self._framework_agent)
+        g.add_node("parallel_analysis", self._parallel_analysis)
         g.add_node("gap_detection_agent", self._gap_detection_agent)
         g.add_node("scoring_agent", self._scoring_agent)
         g.add_node("best_practices_agent", self._best_practices_agent)
@@ -139,11 +148,8 @@ class Orchestrator:
         g.add_node("finalize", self._finalize)
 
         g.set_entry_point("synopsis_agent")
-        g.add_edge("synopsis_agent", "compliance_agent")
-        g.add_edge("compliance_agent", "security_agent")
-        g.add_edge("security_agent", "risk_agent")
-        g.add_edge("risk_agent", "framework_agent")
-        g.add_edge("framework_agent", "gap_detection_agent")
+        g.add_edge("synopsis_agent", "parallel_analysis")
+        g.add_edge("parallel_analysis", "gap_detection_agent")
         g.add_edge("gap_detection_agent", "scoring_agent")
         g.add_edge("scoring_agent", "best_practices_agent")
         g.add_edge("best_practices_agent", "suggestion_agent")
@@ -157,10 +163,11 @@ class Orchestrator:
     def _synopsis_agent(self, state: AnalysisState, config: dict) -> dict:
         """Step 0: Extract document synopsis (fast model)."""
         llm = config["configurable"]["llm"]
+        tracker = config["configurable"]["tracker"]
         print("🔍 Agent 0/9: Synopsis — extracting document structure...")
         try:
             prompt = synopsis_prompt(state["document_text"], state["document_type"])
-            raw = llm.invoke_fast(prompt, max_tokens=2048)
+            raw = llm.invoke_fast(prompt, max_tokens=2048, tracker=tracker)
             data = llm.parse_json(raw)
             print(f"   ✅ Synopsis: {data.get('document_title', 'unknown')}")
             return {"synopsis": data, "current_step": 1}
@@ -168,118 +175,138 @@ class Orchestrator:
             print(f"   ⚠️ Synopsis failed: {e}")
             return {"synopsis": None, "current_step": 1, "errors": state["errors"] + [f"synopsis: {e}"]}
 
-    def _compliance_agent(self, state: AnalysisState, config: dict) -> dict:
-        """Step 1: Compliance analysis (fast model)."""
+    def _parallel_analysis(self, state: AnalysisState, config: dict) -> dict:
+        """Steps 1-4: Run compliance, security, risk, and framework agents IN PARALLEL."""
         llm = config["configurable"]["llm"]
-        print("📋 Agent 1/9: Compliance Analysis...")
-        try:
-            prompt = compliance_prompt(
-                state["document_text"], state["document_type"],
-                synopsis=state.get("synopsis")
-            )
-            raw = llm.invoke_fast(prompt, max_tokens=4096)
-            data = llm.parse_json(raw)
-            findings = data.get("findings", [])
-            score = data.get("score", 0)
-            print(f"   ✅ {len(findings)} findings, score={score}")
-            return {"compliance_findings": findings, "compliance_score": score, "current_step": 2}
-        except Exception as e:
-            print(f"   ⚠️ Compliance failed: {e}")
-            traceback.print_exc()
-            return {"current_step": 2, "errors": state["errors"] + [f"compliance: {e}"]}
+        tracker = config["configurable"]["tracker"]
+        print("⚡ Agents 1-4: Running compliance, security, risk, framework IN PARALLEL...")
 
-    def _security_agent(self, state: AnalysisState, config: dict) -> dict:
-        """Step 2: Security analysis (fast model)."""
-        llm = config["configurable"]["llm"]
-        print("🔒 Agent 2/9: Security Analysis...")
-        try:
-            prompt = security_prompt(
-                state["document_text"], state["document_type"],
-                synopsis=state.get("synopsis")
-            )
-            raw = llm.invoke_fast(prompt, max_tokens=4096)
-            data = llm.parse_json(raw)
-            findings = data.get("findings", [])
-            score = data.get("score", 0)
-            print(f"   ✅ {len(findings)} findings, score={score}")
-            return {"security_findings": findings, "security_score": score, "current_step": 3}
-        except Exception as e:
-            print(f"   ⚠️ Security failed: {e}")
-            traceback.print_exc()
-            return {"current_step": 3, "errors": state["errors"] + [f"security: {e}"]}
+        merged = {"current_step": 5, "errors": list(state.get("errors", []))}
 
-    def _risk_agent(self, state: AnalysisState, config: dict) -> dict:
-        """Step 3: Risk analysis (fast model)."""
-        llm = config["configurable"]["llm"]
-        print("⚠️ Agent 3/9: Risk Analysis...")
-        try:
-            prompt = risk_prompt(
-                state["document_text"], state["document_type"],
-                synopsis=state.get("synopsis")
-            )
-            raw = llm.invoke_fast(prompt, max_tokens=4096)
-            data = llm.parse_json(raw)
-            findings = data.get("findings", [])
-            score = data.get("score", 0)
-            risk_level = data.get("risk_level", "medium")
-            print(f"   ✅ {len(findings)} risks, score={score}, level={risk_level}")
-            return {
-                "risk_findings": findings,
-                "risk_score": score,
-                "risk_level": risk_level,
-                "current_step": 4,
-            }
-        except Exception as e:
-            print(f"   ⚠️ Risk failed: {e}")
-            traceback.print_exc()
-            return {"current_step": 4, "errors": state["errors"] + [f"risk: {e}"]}
-
-    def _framework_agent(self, state: AnalysisState, config: dict) -> dict:
-        """Step 4: Framework mapping (Sonnet)."""
-        llm = config["configurable"]["llm"]
-        print("🗺️ Agent 4/9: Framework Mapping...")
-        uploaded = state.get("uploaded_frameworks", {})
-        text = state["document_text"]
-        doc_type = state["document_type"]
-        mappings = {}
-
-        # RAG-based comparison for uploaded framework standards
-        for fw_key in framework_store.FRAMEWORK_KEYS:
-            if uploaded.get(fw_key):
-                try:
-                    hits = framework_store.search_framework(fw_key, text[:2000], top_k=10)
-                    if hits:
-                        prompt = framework_comparison_prompt(text, doc_type, fw_key, hits)
-                        raw = llm.invoke(prompt, max_tokens=6144)
-                        data = llm.parse_json(raw)
-                        data['source'] = 'uploaded_standard'
-                        mappings[fw_key] = data
-                        print(f"   📋 {fw_key}: score={data.get('alignment_score', '?')} (RAG)")
-                        continue
-                except Exception as e:
-                    print(f"   ⚠️ {fw_key} RAG comparison failed: {e}")
-
-        # LLM-based mapping for remaining frameworks
-        try:
-            remaining = [k for k in framework_store.FRAMEWORK_KEYS if k not in mappings]
-            if remaining:
-                prompt = framework_mapping_prompt(text, doc_type)
-                raw = llm.invoke(prompt, max_tokens=8192)
+        def _run_compliance():
+            print("📋 Agent 1/9: Compliance Analysis...")
+            try:
+                prompt = compliance_prompt(
+                    state["document_text"], state["document_type"],
+                    synopsis=state.get("synopsis")
+                )
+                raw = llm.invoke_fast(prompt, max_tokens=4096, tracker=tracker)
                 data = llm.parse_json(raw)
-                for key in remaining:
-                    if key in data:
-                        data[key]['source'] = 'ai_knowledge'
-                        mappings[key] = data[key]
-                        print(f"   📋 {key}: score={data[key].get('alignment_score', '?')} (LLM)")
-        except Exception as e:
-            print(f"   ⚠️ Framework mapping failed: {e}")
-            traceback.print_exc()
+                findings = data.get("findings", [])
+                score = data.get("score", 0)
+                print(f"   ✅ Compliance: {len(findings)} findings, score={score}")
+                return {"compliance_findings": findings, "compliance_score": score}
+            except Exception as e:
+                print(f"   ⚠️ Compliance failed: {e}")
+                traceback.print_exc()
+                return {"_error": f"compliance: {e}"}
 
-        return {"framework_mappings": mappings, "current_step": 5}
+        def _run_security():
+            print("🔒 Agent 2/9: Security Analysis...")
+            try:
+                prompt = security_prompt(
+                    state["document_text"], state["document_type"],
+                    synopsis=state.get("synopsis")
+                )
+                raw = llm.invoke_fast(prompt, max_tokens=4096, tracker=tracker)
+                data = llm.parse_json(raw)
+                findings = data.get("findings", [])
+                score = data.get("score", 0)
+                print(f"   ✅ Security: {len(findings)} findings, score={score}")
+                return {"security_findings": findings, "security_score": score}
+            except Exception as e:
+                print(f"   ⚠️ Security failed: {e}")
+                traceback.print_exc()
+                return {"_error": f"security: {e}"}
+
+        def _run_risk():
+            print("⚠️ Agent 3/9: Risk Analysis...")
+            try:
+                prompt = risk_prompt(
+                    state["document_text"], state["document_type"],
+                    synopsis=state.get("synopsis")
+                )
+                raw = llm.invoke_fast(prompt, max_tokens=4096, tracker=tracker)
+                data = llm.parse_json(raw)
+                findings = data.get("findings", [])
+                score = data.get("score", 0)
+                risk_level = data.get("risk_level", "medium")
+                print(f"   ✅ Risk: {len(findings)} risks, score={score}, level={risk_level}")
+                return {"risk_findings": findings, "risk_score": score, "risk_level": risk_level}
+            except Exception as e:
+                print(f"   ⚠️ Risk failed: {e}")
+                traceback.print_exc()
+                return {"_error": f"risk: {e}"}
+
+        def _run_framework():
+            print("🗺️ Agent 4/9: Framework Mapping...")
+            uploaded = state.get("uploaded_frameworks", {})
+            text = state["document_text"]
+            doc_type = state["document_type"]
+            mappings = {}
+
+            # RAG-based comparison for uploaded framework standards
+            for fw_key in framework_store.FRAMEWORK_KEYS:
+                if uploaded.get(fw_key):
+                    try:
+                        hits = framework_store.search_framework(fw_key, text[:2000], top_k=10)
+                        if hits:
+                            prompt = framework_comparison_prompt(text, doc_type, fw_key, hits)
+                            raw = llm.invoke(prompt, max_tokens=6144, tracker=tracker)
+                            data = llm.parse_json(raw)
+                            data['source'] = 'uploaded_standard'
+                            mappings[fw_key] = data
+                            print(f"   📋 {fw_key}: score={data.get('alignment_score', '?')} (RAG)")
+                            continue
+                    except Exception as e:
+                        print(f"   ⚠️ {fw_key} RAG comparison failed: {e}")
+
+            # LLM-based mapping for remaining frameworks
+            try:
+                remaining = [k for k in framework_store.FRAMEWORK_KEYS if k not in mappings]
+                if remaining:
+                    prompt = framework_mapping_prompt(text, doc_type)
+                    raw = llm.invoke(prompt, max_tokens=8192, tracker=tracker)
+                    data = llm.parse_json(raw)
+                    for key in remaining:
+                        if key in data:
+                            data[key]['source'] = 'ai_knowledge'
+                            mappings[key] = data[key]
+                            print(f"   📋 {key}: score={data[key].get('alignment_score', '?')} (LLM)")
+            except Exception as e:
+                print(f"   ⚠️ Framework mapping failed: {e}")
+                traceback.print_exc()
+
+            return {"framework_mappings": mappings}
+
+        # Fan-out: run all 4 agents concurrently
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_AGENTS) as executor:
+            futures = {
+                executor.submit(_run_compliance): "compliance",
+                executor.submit(_run_security): "security",
+                executor.submit(_run_risk): "risk",
+                executor.submit(_run_framework): "framework",
+            }
+            for future in as_completed(futures):
+                agent_name = futures[future]
+                try:
+                    result = future.result()
+                    # Collect errors
+                    if "_error" in result:
+                        merged["errors"].append(result.pop("_error"))
+                    # Merge all other keys into the state update
+                    merged.update(result)
+                except Exception as e:
+                    print(f"   ⚠️ {agent_name} thread error: {e}")
+                    merged["errors"].append(f"{agent_name}: {e}")
+
+        print("⚡ Agents 1-4: COMPLETE (parallel execution)")
+        return merged
 
     def _gap_detection_agent(self, state: AnalysisState, config: dict) -> dict:
         """Step 5: Gap detection — document-driven, receives upstream findings (Sonnet)."""
         llm = config["configurable"]["llm"]
+        tracker = config["configurable"]["tracker"]
         print("🔎 Agent 5/9: Gap Detection...")
         try:
             prompt = gap_detection_prompt(
@@ -288,7 +315,7 @@ class Orchestrator:
                 compliance_findings=state.get("compliance_findings"),
                 security_findings=state.get("security_findings"),
             )
-            raw = llm.invoke(prompt, max_tokens=4096)
+            raw = llm.invoke(prompt, max_tokens=4096, tracker=tracker)
             data = llm.parse_json(raw)
             gaps = data.get("gaps", [])
             print(f"   ✅ {len(gaps)} gaps detected")
@@ -301,13 +328,14 @@ class Orchestrator:
     def _scoring_agent(self, state: AnalysisState, config: dict) -> dict:
         """Step 6: Scoring (fast model)."""
         llm = config["configurable"]["llm"]
+        tracker = config["configurable"]["tracker"]
         print("📊 Agent 6/9: Scoring...")
         try:
             prompt = scoring_prompt(
                 state["document_text"], state["document_type"],
                 synopsis=state.get("synopsis")
             )
-            raw = llm.invoke_fast(prompt, max_tokens=2048)
+            raw = llm.invoke_fast(prompt, max_tokens=2048, tracker=tracker)
             data = llm.parse_json(raw)
 
             # Compute overall score from all agent scores
@@ -357,6 +385,7 @@ class Orchestrator:
     def _best_practices_agent(self, state: AnalysisState, config: dict) -> dict:
         """Step 7: Best practices comparison — document-driven (Sonnet)."""
         llm = config["configurable"]["llm"]
+        tracker = config["configurable"]["tracker"]
         print("🏆 Agent 7/9: Best Practices...")
         try:
             prompt = best_practices_prompt(
@@ -364,7 +393,7 @@ class Orchestrator:
                 synopsis=state.get("synopsis"),
                 gap_detections=state.get("gap_detections"),
             )
-            raw = llm.invoke(prompt, max_tokens=4096)
+            raw = llm.invoke(prompt, max_tokens=4096, tracker=tracker)
             data = llm.parse_json(raw)
             comparisons = data.get("comparisons", [])
             print(f"   ✅ {len(comparisons)} comparisons")
@@ -377,6 +406,7 @@ class Orchestrator:
     def _suggestion_agent(self, state: AnalysisState, config: dict) -> dict:
         """Step 8: Auto-suggestions — receives ALL upstream findings (Sonnet)."""
         llm = config["configurable"]["llm"]
+        tracker = config["configurable"]["tracker"]
         print("💡 Agent 8/9: Suggestions...")
         try:
             prompt = auto_suggest_prompt(
@@ -388,7 +418,7 @@ class Orchestrator:
                 gap_detections=state.get("gap_detections"),
                 best_practices=state.get("best_practices"),
             )
-            raw = llm.invoke(prompt, max_tokens=4096)
+            raw = llm.invoke(prompt, max_tokens=4096, tracker=tracker)
             data = llm.parse_json(raw)
             suggestions = data.get("suggestions", [])
             print(f"   ✅ {len(suggestions)} suggestions")
@@ -401,6 +431,7 @@ class Orchestrator:
     def _finalize(self, state: AnalysisState, config: dict) -> dict:
         """Step 9: LLM-based synthesis of all findings into deduplicated recommendations."""
         llm = config["configurable"]["llm"]
+        tracker = config["configurable"]["tracker"]
         print("🧠 Agent 9/9: Synthesis & Recommendations...")
         try:
             prompt = recommendations_prompt(
@@ -413,7 +444,7 @@ class Orchestrator:
                 best_practices=state.get("best_practices"),
                 suggestions=state.get("auto_suggestions"),
             )
-            raw = llm.invoke(prompt, max_tokens=4096)
+            raw = llm.invoke(prompt, max_tokens=4096, tracker=tracker)
             data = llm.parse_json(raw)
             recs = data.get("recommendations", [])
             print(f"   ✅ {len(recs)} recommendations synthesized")
@@ -460,11 +491,13 @@ class Orchestrator:
                 })
         return recs[:10]
 
-    # ---- Multi-document batch analysis ---------------------------------------
+    # ---- Multi-document batch analysis (PARALLEL) ----------------------------
 
     def run_batch(self, documents: list[dict], doc_type: str,
                   uploaded_frameworks: dict = None) -> dict:
         """Run analysis on multiple documents with cross-document synthesis.
+
+        Documents are analyzed IN PARALLEL (up to MAX_PARALLEL_BATCH_DOCS at a time).
 
         Args:
             documents: List of {"id": int, "filename": str, "text": str}
@@ -479,28 +512,32 @@ class Orchestrator:
             uploaded_frameworks = {k: False for k in framework_store.FRAMEWORK_KEYS}
 
         print(f"\n{'='*60}")
-        print(f"🔄 BATCH ANALYSIS: {len(documents)} documents")
+        print(f"🔄 BATCH ANALYSIS: {len(documents)} documents (parallel, max_workers={MAX_PARALLEL_BATCH_DOCS})")
         print(f"{'='*60}\n")
         for idx, d in enumerate(documents):
             print(f"  [{idx}] id={d['id']} filename='{d['filename']}' text_len={len(d.get('text',''))}")
 
-        # Phase 1: Analyze each document individually
+        # Phase 1: Analyze each document IN PARALLEL
         individual_results = []
-        for i, doc in enumerate(documents):
-            print(f"\n--- Document {i+1}/{len(documents)}: {doc['filename']} ---")
+
+        def _analyze_one(doc):
+            """Analyze a single document — runs in a worker thread."""
+            print(f"\n--- Analyzing: {doc['filename']} (id={doc['id']}) ---")
             try:
-                result = self.run(doc["id"], doc["text"], doc_type,
-                                  uploaded_frameworks=uploaded_frameworks)
-                individual_results.append({
+                # Each parallel document gets its own Orchestrator to avoid
+                # LangGraph compiled graph iteration state corruption.
+                doc_orchestrator = Orchestrator()
+                result = doc_orchestrator.run(doc["id"], doc["text"], doc_type,
+                                              uploaded_frameworks=uploaded_frameworks)
+                return {
                     "document_id": doc["id"],
                     "filename": doc["filename"],
                     "result": result,
-                })
+                }
             except BaseException as e:
-                print(f"❌ Document {i+1}/{len(documents)} ({doc['filename']}) failed: {e}")
+                print(f"❌ Document {doc['filename']} failed: {e}")
                 traceback.print_exc()
-                # Include a minimal placeholder so cross-doc analysis still runs
-                individual_results.append({
+                return {
                     "document_id": doc["id"],
                     "filename": doc["filename"],
                     "result": {
@@ -515,10 +552,20 @@ class Orchestrator:
                         "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
                         "processing_time": 0, "errors": [str(e)],
                     },
-                })
-            print(f"📌 Finished document {i+1}/{len(documents)}: {doc['filename']}")
+                }
 
-        print(f"\n✅ LOOP COMPLETE: processed {len(individual_results)} of {len(documents)} documents")
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_BATCH_DOCS) as executor:
+            futures = {executor.submit(_analyze_one, doc): doc for doc in documents}
+            for future in as_completed(futures):
+                doc = futures[future]
+                try:
+                    ir = future.result()
+                    individual_results.append(ir)
+                    print(f"📌 Finished: {doc['filename']}")
+                except Exception as e:
+                    print(f"❌ Thread error for {doc['filename']}: {e}")
+
+        print(f"\n✅ PARALLEL LOOP COMPLETE: processed {len(individual_results)} of {len(documents)} documents")
 
         # Phase 2: Cross-document gap detection via vector cross-reference
         print(f"\n{'='*60}")
@@ -542,40 +589,42 @@ class Orchestrator:
         return {
             "individual_results": individual_results,
             "cross_doc_gaps": cross_doc_gaps,
-            "synthesis": synthesis, # synthesis already contains total_tokens
+            "synthesis": synthesis,
             "processing_time": total_time,
             "document_count": len(documents),
-            "total_tokens": total_batch_tokens, # Add total_tokens to the batch result
+            "total_tokens": total_batch_tokens,
         }
 
     def _cross_doc_gap_detection(self, individual_results: list) -> dict:
         """Use Vector Cross-Reference to detect inter-document gaps."""
-        import chromadb
-        from chromadb.config import Settings
+        import numpy as np
+        from embedding import embed_texts, embed_query
 
         print("🔎 Cross-doc gap detection via Vector Cross-Reference...")
 
-        # Build temporary collection for cross-referencing
         try:
-            client = chromadb.Client(Settings(anonymized_telemetry=False))
-            col = client.get_or_create_collection(
-                "batch_cross_ref", metadata={"hnsw:space": "cosine"}
-            )
+            # Build in-memory index of all document chunks
+            all_chunks = []       # list of { text, filename, doc_id, embedding }
+            chunk_texts = []      # parallel list for batch embedding
 
-            # Index each document's text in chunks
             for ir in individual_results:
                 text = ir["result"].get("document_text", "")
                 filename = ir["filename"]
                 if not text:
                     continue
-                # Simple chunking for cross-reference
                 chunk_size = 1500
                 chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size-200)]
-                if not chunks:
-                    continue
-                ids = [f"{filename}_chunk_{i}" for i in range(len(chunks))]
-                metadatas = [{"filename": filename, "doc_id": ir["document_id"]} for _ in chunks]
-                col.add(documents=chunks, ids=ids, metadatas=metadatas)
+                for chunk in chunks:
+                    if chunk.strip():
+                        all_chunks.append({"text": chunk, "filename": filename, "doc_id": ir["document_id"]})
+                        chunk_texts.append(chunk)
+
+            if not chunk_texts:
+                return {"resolved_gaps": [], "corpus_gaps": [], "contradictions": [], "total_tokens": 0}
+
+            # Batch embed all chunks
+            chunk_embeddings = embed_texts(chunk_texts)
+            chunk_emb_array = np.array(chunk_embeddings)
 
             # Build summaries for the gap prompt
             doc_summaries = []
@@ -594,20 +643,20 @@ class Orchestrator:
                 for gap in summary.get("gap_detections", []):
                     all_gap_topics.append(gap.get("gap_title", "") + " " + gap.get("details", ""))
 
-            # Search for coverage of gaps across all documents
+            # Search for coverage of gaps across all documents using cosine similarity
             cross_doc_chunks = []
-            for topic in all_gap_topics[:15]:  # limit queries
+            for topic in all_gap_topics[:15]:
                 if not topic.strip():
                     continue
                 try:
-                    results = col.query(query_texts=[topic], n_results=5)
-                    docs = results.get("documents", [[]])[0]
-                    metas = results.get("metadatas", [[]])[0]
-                    for j, doc_text in enumerate(docs):
-                        meta = metas[j] if j < len(metas) else {}
+                    topic_emb = np.array(embed_query(topic))
+                    # Cosine similarity (embeddings are already normalized)
+                    similarities = chunk_emb_array @ topic_emb
+                    top_indices = np.argsort(similarities)[-5:][::-1]
+                    for idx in top_indices:
                         cross_doc_chunks.append({
-                            "text": doc_text[:800],
-                            "filename": meta.get("filename", "unknown"),
+                            "text": all_chunks[idx]["text"][:800],
+                            "filename": all_chunks[idx]["filename"],
                         })
                 except Exception:
                     pass
@@ -623,20 +672,15 @@ class Orchestrator:
 
             # Ask LLM to resolve cross-document gaps
             local_llm = get_llm_client()
+            local_tracker = get_token_tracker()
             prompt = multi_doc_gap_prompt(doc_summaries, unique_chunks[:20])
-            raw = local_llm.invoke(prompt, max_tokens=6144)
+            raw = local_llm.invoke(prompt, max_tokens=6144, tracker=local_tracker)
             data = local_llm.parse_json(raw)
-            data["total_tokens"] = local_llm.total_input_tokens + local_llm.total_output_tokens
+            data["total_tokens"] = local_tracker.total_tokens
 
             print(f"   ✅ Resolved gaps: {len(data.get('resolved_gaps', []))}")
             print(f"   ✅ Corpus gaps: {len(data.get('corpus_gaps', []))}")
             print(f"   ✅ Contradictions: {len(data.get('contradictions', []))}")
-
-            # Cleanup temp collection
-            try:
-                client.delete_collection("batch_cross_ref")
-            except Exception:
-                pass
 
             return data
 
@@ -666,10 +710,11 @@ class Orchestrator:
                 })
 
             local_llm = get_llm_client()
+            local_tracker = get_token_tracker()
             prompt = multi_doc_synthesis_prompt(doc_results)
-            raw = local_llm.invoke(prompt, max_tokens=4096)
+            raw = local_llm.invoke(prompt, max_tokens=4096, tracker=local_tracker)
             data = local_llm.parse_json(raw)
-            data["total_tokens"] = local_llm.total_input_tokens + local_llm.total_output_tokens
+            data["total_tokens"] = local_tracker.total_tokens
 
             print(f"   ✅ Synthesis complete: overall_score={data.get('overall_score', '?')}")
             return data

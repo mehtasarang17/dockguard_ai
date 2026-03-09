@@ -2391,20 +2391,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     navigateTo('dashboard');
 });
 // ============================================================
-// SETTINGS — Authorized Applications
+// SETTINGS — Tenants & API Docs (API Keys managed via Provisioning API only)
 // ============================================================
 const settingsModal = document.getElementById('settingsModal');
-let currentApiKey = ''; // first active app key (for curl example)
-let revealedKeys = {};  // track which app keys are revealed
 
 // Initialize settings events
 (function initSettings() {
-    document.getElementById('nav-settings').addEventListener('click', openSettings);
     document.getElementById('closeSettingsBtn').addEventListener('click', closeSettings);
-    document.getElementById('addAppBtn').addEventListener('click', createApp);
-    document.getElementById('newAppNameInput').addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') createApp();
-    });
 
     // Close on backdrop click
     settingsModal.onclick = (e) => {
@@ -2412,146 +2405,8 @@ let revealedKeys = {};  // track which app keys are revealed
     };
 })();
 
-function openSettings(e) {
-    if (e) e.preventDefault();
-    settingsModal.style.display = 'flex';
-    loadApps();
-    populateApiDocs();
-}
-
 function closeSettings() {
     settingsModal.style.display = 'none';
-    revealedKeys = {};
-}
-
-async function loadApps() {
-    const list = document.getElementById('appsList');
-    list.innerHTML = '<div style="text-align:center;padding:1rem;color:var(--text-muted)"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
-
-    try {
-        const res = await fetch(`${API_BASE}/api/system/apps`);
-        const data = await res.json();
-        const apps = data.apps || [];
-
-        // Set currentApiKey to first active app for curl example
-        const firstActive = apps.find(a => a.is_active);
-        currentApiKey = firstActive ? firstActive.api_key : '';
-        updateCurlExample();
-
-        if (apps.length === 0) {
-            list.innerHTML = '<div class="apps-empty"><i class="fas fa-shield-halved"></i><p>No applications registered yet</p></div>';
-            return;
-        }
-
-        list.innerHTML = apps.map(app => {
-            const isRevealed = revealedKeys[app.id];
-            const maskedKey = app.api_key.substring(0, 6) + '••••••••••••••••';
-            const displayKey = isRevealed ? app.api_key : maskedKey;
-            const lastUsed = app.last_used ? timeAgo(new Date(app.last_used)) : 'Never';
-            const statusClass = app.is_active ? 'active' : 'disabled';
-            const statusLabel = app.is_active ? 'Active' : 'Disabled';
-
-            return `<div class="app-row ${statusClass}">
-                <div class="app-info">
-                    <div class="app-name-row">
-                        <span class="app-name">${escHtml(app.name)}</span>
-                        <span class="app-status-badge ${statusClass}">${statusLabel}</span>
-                    </div>
-                    <div class="app-key-row">
-                        <code class="app-key-display">${displayKey}</code>
-                        <button class="btn-icon-xs" onclick="toggleRevealKey(${app.id})" title="${isRevealed ? 'Hide' : 'Reveal'}">
-                            <i class="fas fa-${isRevealed ? 'eye-slash' : 'eye'}"></i>
-                        </button>
-                        <button class="btn-icon-xs" onclick="copyAppKey('${app.api_key}')" title="Copy Key">
-                            <i class="fas fa-copy"></i>
-                        </button>
-                    </div>
-                    <div class="app-meta">
-                        <span><i class="fas fa-clock"></i> Last used: ${lastUsed}</span>
-                        <span><i class="fas fa-calendar"></i> Created: ${new Date(app.created_at).toLocaleDateString()}</span>
-                    </div>
-                </div>
-                <div class="app-actions">
-                    <button class="btn-icon-xs ${app.is_active ? '' : 'success'}" onclick="toggleApp(${app.id})" title="${app.is_active ? 'Disable' : 'Enable'}">
-                        <i class="fas fa-${app.is_active ? 'pause' : 'play'}"></i>
-                    </button>
-                    <button class="btn-icon-xs danger" onclick="deleteApp(${app.id}, '${escHtml(app.name)}')" title="Revoke & Delete">
-                        <i class="fas fa-trash-alt"></i>
-                    </button>
-                </div>
-            </div>`;
-        }).join('');
-
-    } catch (e) {
-        console.error('Failed to load apps', e);
-        list.innerHTML = '<div class="apps-empty"><i class="fas fa-exclamation-triangle"></i><p>Failed to load applications</p></div>';
-    }
-}
-
-async function createApp() {
-    const input = document.getElementById('newAppNameInput');
-    const name = input.value.trim();
-    if (!name) { input.focus(); return; }
-
-    const btn = document.getElementById('addAppBtn');
-    btn.disabled = true;
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-
-    try {
-        const res = await fetch(`${API_BASE}/api/system/apps`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name }),
-        });
-        if (res.ok) {
-            input.value = '';
-            const data = await res.json();
-            // Auto-reveal the newly created key
-            revealedKeys[data.id] = true;
-            await loadApps();
-        } else {
-            const err = await res.json();
-            alert(err.error || 'Failed to create application');
-        }
-    } catch (e) {
-        console.error('Failed to create app', e);
-        alert('Failed to create application');
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fas fa-plus"></i> Add';
-    }
-}
-
-async function deleteApp(appId, appName) {
-    if (!confirm(`Revoke access for "${appName}"?\n\nThis will immediately invalidate the app's API key.`)) return;
-    try {
-        await fetch(`${API_BASE}/api/system/apps/${appId}`, { method: 'DELETE' });
-        delete revealedKeys[appId];
-        await loadApps();
-    } catch (e) {
-        console.error('Failed to delete app', e);
-        alert('Failed to delete application');
-    }
-}
-
-async function toggleApp(appId) {
-    try {
-        await fetch(`${API_BASE}/api/system/apps/${appId}/toggle`, { method: 'PATCH' });
-        await loadApps();
-    } catch (e) {
-        console.error('Failed to toggle app', e);
-    }
-}
-
-function toggleRevealKey(appId) {
-    revealedKeys[appId] = !revealedKeys[appId];
-    loadApps();
-}
-
-function copyAppKey(key) {
-    navigator.clipboard.writeText(key).then(() => {
-        // Brief visual feedback via the btn (handled by reload)
-    });
 }
 
 function timeAgo(date) {
@@ -2607,13 +2462,6 @@ const API_ENDPOINTS = [
     { method: 'GET', path: '/api/trends', desc: 'Historical score trends' },
     { method: 'GET', path: '/api/stats', desc: 'Token usage statistics' },
     { method: 'POST', path: '/api/stats/reset', desc: 'Reset token counters' },
-    // System
-    { method: 'GET', path: '/api/system/apps', desc: 'List authorized applications' },
-    { method: 'POST', path: '/api/system/apps', desc: 'Create an application + key' },
-    { method: 'DELETE', path: '/api/system/apps/:id', desc: 'Delete an application' },
-    { method: 'PATCH', path: '/api/system/apps/:id/toggle', desc: 'Toggle app active/inactive' },
-    { method: 'GET', path: '/api/system/settings/api-key', desc: 'Get current API key' },
-    { method: 'POST', path: '/api/system/settings/api-key/refresh', desc: 'Refresh API key' },
     // Admin (requires is_admin)
     { method: 'GET', path: '/api/admin/tenants', desc: 'List all tenants' },
     { method: 'POST', path: '/api/admin/tenants', desc: 'Create a tenant' },
@@ -2638,15 +2486,6 @@ function populateApiDocs() {
             <span class="api-ep-desc">${ep.desc}</span>
         </div>`;
     }).join('');
-
-    updateCurlExample();
-}
-
-function updateCurlExample() {
-    const el = document.getElementById('apiCurlExample');
-    if (!el) return;
-    const key = currentApiKey || 'sk-your-key-here';
-    el.textContent = `curl -X GET "http://localhost:3001/api/documents" \\\n  -H "X-API-Key: ${key}"`;
 }
 
 // Copy curl example
@@ -3072,7 +2911,7 @@ openSettings = function (e) {
 // SETTINGS — Tab Switching
 // ============================================================
 function switchSettingsTab(tab) {
-    ['keys', 'tenants', 'docs'].forEach(t => {
+    ['tenants', 'docs'].forEach(t => {
         document.getElementById(`stab-${t}`)?.classList.remove('active');
         const panel = document.getElementById(`spanel-${t}`);
         if (panel) panel.style.display = 'none';

@@ -1,9 +1,10 @@
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text, Float,
-    DateTime, Boolean, ForeignKey, JSON, text
+    DateTime, Boolean, ForeignKey, JSON, text, Index
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
+from pgvector.sqlalchemy import Vector
 from datetime import datetime
 from config import Config
 
@@ -49,6 +50,7 @@ class Document(Base):
     upload_date = Column(DateTime, default=datetime.utcnow)
     status = Column(String(50), default='uploaded')  # uploaded, processing, completed, failed
     is_saved = Column(Boolean, default=False)  # user explicitly saved for knowledge base
+    markdown_text = Column(Text, nullable=True)  # cached Markdown conversion of the original file
 
     # Relationships
     tenant = relationship("Tenant", back_populates="documents")
@@ -249,7 +251,26 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def init_db():
+    # Enable pgvector extension before creating tables
+    with engine.connect() as conn:
+        conn.execute(text('CREATE EXTENSION IF NOT EXISTS vector'))
+        conn.commit()
+
     Base.metadata.create_all(bind=engine)
+
+    # Create HNSW indexes for vector search (idempotent)
+    hnsw_indexes = [
+        'CREATE INDEX IF NOT EXISTS ix_kb_chunks_embedding ON kb_chunks USING hnsw (embedding vector_cosine_ops)',
+        'CREATE INDEX IF NOT EXISTS ix_framework_chunks_embedding ON framework_chunks USING hnsw (embedding vector_cosine_ops)',
+        'CREATE INDEX IF NOT EXISTS ix_chat_file_chunks_embedding ON chat_file_chunks USING hnsw (embedding vector_cosine_ops)',
+    ]
+    with engine.connect() as conn:
+        for stmt in hnsw_indexes:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+            except Exception:
+                conn.rollback()
 
     # ---- Migrations (safe, idempotent) ----------------------------------------
     migrations = [
@@ -264,6 +285,8 @@ def init_db():
         # API key expiration & refresh tokens
         'ALTER TABLE authorized_apps ADD COLUMN expires_at TIMESTAMP',
         'ALTER TABLE authorized_apps ADD COLUMN refresh_token VARCHAR(100) UNIQUE',
+        # Markdown text cache
+        'ALTER TABLE documents ADD COLUMN markdown_text TEXT',
         # Older app migrations
         'ALTER TABLE chat_history ALTER COLUMN document_id DROP NOT NULL',
         'ALTER TABLE chat_history ADD COLUMN tokens_used INTEGER DEFAULT 0',
@@ -277,6 +300,56 @@ def init_db():
                 conn.commit()
             except Exception:
                 conn.rollback()  # column / constraint already exists — safe to ignore
+
+
+# ---- pgvector Tables ---------------------------------------------------------
+
+class KBChunk(Base):
+    """Knowledge Base chunk with vector embedding (per-tenant)."""
+    __tablename__ = 'kb_chunks'
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    doc_id = Column(Integer, ForeignKey('documents.id', ondelete='CASCADE'), nullable=False)
+    filename = Column(String(255))
+    chunk_index = Column(Integer, default=0)
+    content = Column(Text, nullable=False)
+    embedding = Column(Vector(384))  # all-MiniLM-L6-v2 = 384 dims
+
+    __table_args__ = (
+        Index('ix_kb_chunks_tenant_doc', 'tenant_id', 'doc_id'),
+    )
+
+
+class FrameworkChunk(Base):
+    """Framework standard chunk with vector embedding (per-tenant)."""
+    __tablename__ = 'framework_chunks'
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    framework_key = Column(String(20), nullable=False)
+    version = Column(String(100))
+    filename = Column(String(255))
+    chunk_index = Column(Integer, default=0)
+    content = Column(Text, nullable=False)
+    embedding = Column(Vector(384))
+
+    __table_args__ = (
+        Index('ix_fw_chunks_tenant_key', 'tenant_id', 'framework_key'),
+    )
+
+
+class ChatFileChunk(Base):
+    """Temporary chat file chunk with vector embedding."""
+    __tablename__ = 'chat_file_chunks'
+
+    id = Column(Integer, primary_key=True)
+    session_id = Column(String(100), nullable=False, index=True)
+    filename = Column(String(255))
+    chunk_index = Column(Integer, default=0)
+    content = Column(Text, nullable=False)
+    embedding = Column(Vector(384))
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class FrameworkStandard(Base):

@@ -7,10 +7,13 @@ requests==2.32.3
 langgraph==0.2.62
 langchain-core>=0.3.34
 gunicorn==23.0.0
-chromadb==0.4.24
 numpy<2.0.0
 markdownify<0.14
 markitdown==0.0.1a4
 langchain-text-splitters==0.3.6
 openpyxl
 python-docx
+celery[redis]==5.4.0
+redis==5.2.1
+pgvector==0.3.6
+sentence-transformers==3.4.1

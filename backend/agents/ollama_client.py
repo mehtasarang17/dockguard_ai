@@ -4,6 +4,10 @@ Ollama LLM client — drop-in alternative to BedrockClient.
 Uses the Ollama REST API (/api/chat) for local model inference.
 Implements the same public interface: invoke(), invoke_fast(), parse_json(),
 reset_tokens(), and token tracking attributes.
+
+This client is designed to be used as a **singleton** (via llm_factory).
+Token tracking is handled externally via TokenTracker — do NOT store
+per-request state on this instance.
 """
 import json
 import requests
@@ -16,6 +20,7 @@ class OllamaClient:
     def __init__(self, model: str = None):
         self.base_url = Config.OLLAMA_BASE_URL.rstrip('/')
         self.model = model or Config.OLLAMA_MODEL
+        # Legacy per-instance counters (kept for backward compat, e.g. chat)
         self.total_input_tokens = 0
         self.total_output_tokens = 0
 
@@ -25,7 +30,7 @@ class OllamaClient:
         self.total_output_tokens = 0
 
     def invoke(self, prompt: str, max_tokens: int = 4096, temperature: float = 0.3,
-               model_override: str = None) -> str:
+               model_override: str = None, tracker=None) -> str:
         """Send a prompt to the Ollama model and return the text response."""
         model = model_override or self.model
         url = f"{self.base_url}/api/chat"
@@ -46,16 +51,19 @@ class OllamaClient:
         data = resp.json()
 
         # Track tokens (Ollama provides these in the response)
-        if 'prompt_eval_count' in data:
-            self.total_input_tokens += data['prompt_eval_count']
-        if 'eval_count' in data:
-            self.total_output_tokens += data['eval_count']
+        inp = data.get('prompt_eval_count', 0)
+        out = data.get('eval_count', 0)
+        self.total_input_tokens += inp
+        self.total_output_tokens += out
+        if tracker:
+            tracker.record(input_tokens=inp, output_tokens=out)
 
         return data.get('message', {}).get('content', '')
 
-    def invoke_fast(self, prompt: str, max_tokens: int = 4096, temperature: float = 0.2) -> str:
+    def invoke_fast(self, prompt: str, max_tokens: int = 4096, temperature: float = 0.2,
+                    tracker=None) -> str:
         """For Ollama, fast model is the same as the primary model."""
-        return self.invoke(prompt, max_tokens=max_tokens, temperature=temperature)
+        return self.invoke(prompt, max_tokens=max_tokens, temperature=temperature, tracker=tracker)
 
     # ----- JSON parsing (shared with BedrockClient) ----------------------------
     @staticmethod

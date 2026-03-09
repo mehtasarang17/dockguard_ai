@@ -33,15 +33,6 @@ class Config:
     MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB
     ALLOWED_EXTENSIONS = {'pdf', 'docx', 'doc', 'txt', 'xlsx', 'xls', 'csv'}
 
-    # Vector Store
-    CHROMADB_PATH = os.environ.get('CHROMADB_PATH', '/app/chromadb_data')
-
-    # ChromaDB client/server mode (for production scalability)
-    # When CHROMA_HOST is set, the backend connects to a separate ChromaDB server
-    # instead of using the embedded PersistentClient.
-    CHROMA_HOST = os.environ.get('CHROMA_HOST', '')   # e.g. "doc-analyzer-chromadb"
-    CHROMA_PORT = int(os.environ.get('CHROMA_PORT', '8000'))
-
     # Flask
     DEBUG = os.environ.get('DEBUG', 'False').lower() in ('true', '1', 'yes')
     SECRET_KEY = os.environ.get('SECRET_KEY', 'CHANGE-ME-set-SECRET_KEY-in-env')
@@ -51,3 +42,6 @@ class Config:
 
     # Master key for auto-provisioning tenants (used by SaaS backend)
     PROVISIONING_MASTER_KEY = os.environ.get('PROVISIONING_MASTER_KEY', 'CHANGE-ME-set-PROVISIONING_MASTER_KEY-in-env')
+
+    # Celery / Redis
+    CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://doc-analyzer-redis:6379/0')

@@ -21,6 +21,8 @@ from sqlalchemy import func
 import vector_store
 import framework_store
 import uuid
+from tasks import process_document_task, process_batch_task
+from processing import _increment_lifetime_tokens
 
 # ---- App Setup --------------------------------------------------------------
 app = Flask(__name__)
@@ -91,210 +93,8 @@ def _allowed(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in Config.ALLOWED_EXTENSIONS
 
 
-def _increment_lifetime_tokens(db, token_count: int):
-    """Atomically add token_count to the lifetime_tokens SystemSettings record."""
-    if not token_count:
-        return
-    try:
-        setting = db.query(SystemSettings).filter(SystemSettings.key == 'lifetime_tokens').first()
-        if setting:
-            setting.value = str(int(setting.value) + token_count)
-        else:
-            setting = SystemSettings(key='lifetime_tokens', value=str(token_count))
-            db.add(setting)
-        db.commit()
-    except Exception as e:
-        print(f"⚠️  Failed to update lifetime_tokens: {e}")
-
-
-# ---- Background processing --------------------------------------------------
-def _process_document(document_id: int, file_path: str, document_type: str):
-    db = get_db()
-    try:
-        doc = db.query(Document).filter(Document.id == document_id).first()
-        doc.status = 'processing'
-        db.commit()
-
-        text = extract_text(file_path)
-        start = time.time()
-
-        # Skip framework analysis during initial processing.
-        # User selects frameworks to check after analysis completes.
-        skip_all = {k: False for k in framework_store.FRAMEWORK_KEYS}
-
-        result = orchestrator.run(document_id, text, document_type,
-                                  uploaded_frameworks=skip_all)
-        elapsed = time.time() - start
-
-        scoring = result.get('scoring_details', {})
-
-        analysis = Analysis(
-            document_id=document_id,
-            compliance_score=result.get('compliance_score', 0),
-            security_score=result.get('security_score', 0),
-            risk_score=result.get('risk_score', 0),
-            overall_score=result.get('overall_score', 0),
-            completeness_score=scoring.get('completeness', {}).get('score', 0),
-            security_strength_score=scoring.get('security_strength', {}).get('score', 0),
-            coverage_score=scoring.get('coverage', {}).get('score', 0),
-            clarity_score=scoring.get('clarity', {}).get('score', 0),
-            enforcement_score=scoring.get('enforcement_level', {}).get('score', 0),
-            compliance_findings=result.get('compliance_findings', []),
-            security_findings=result.get('security_findings', []),
-            risk_findings=result.get('risk_findings', []),
-            framework_mappings=result.get('framework_mappings', {}),
-            gap_detections=result.get('gap_detections', []),
-            best_practices=result.get('best_practices', []),
-            suggestions=result.get('auto_suggestions', []),
-            risk_level=result.get('risk_level', 'medium'),
-            document_maturity=result.get('document_maturity', 'basic'),
-            recommendations=result.get('recommendations', []),
-            score_rationale=result.get('score_rationale', []),
-            input_tokens=result.get('input_tokens', 0),
-            output_tokens=result.get('output_tokens', 0),
-            total_tokens=result.get('total_tokens', 0),
-            processing_time=round(elapsed, 2),
-        )
-        db.add(analysis)
-        doc.status = 'completed'
-        db.commit()
-        _increment_lifetime_tokens(db, result.get('total_tokens', 0))
-        print(f"✅ Document {document_id} analysed in {elapsed:.1f}s")
-
-    except Exception as e:
-        print(f"❌ Error processing document {document_id}: {e}")
-        import traceback; traceback.print_exc()
-        doc = db.query(Document).filter(Document.id == document_id).first()
-        if doc:
-            doc.status = 'failed'
-            db.commit()
-    finally:
-        db.close()
-
-
-# ---- Background processing (batch) -------------------------------------------
-def _process_batch(batch_id: int, documents_info: list, document_type: str):
-    """Background worker: analyse multiple documents and run cross-doc synthesis."""
-    db = get_db()
-    try:
-        batch = db.query(BatchAnalysis).filter(BatchAnalysis.id == batch_id).first()
-        if not batch:
-            return
-
-        # Extract text for each document
-        documents = []
-        for info in documents_info:
-            doc = db.query(Document).filter(Document.id == info['id']).first()
-            if doc:
-                doc.status = 'processing'
-                db.commit()
-                try:
-                    text = extract_text(info['file_path'])
-                    text_len = len(text.strip()) if text else 0
-                    print(f"📄 Extracted text for '{info['filename']}': {text_len} chars")
-                    if text_len == 0:
-                        print(f"⚠️  Empty text for '{info['filename']}' — marking as failed")
-                        doc.status = 'failed'
-                        db.commit()
-                        continue
-                    documents.append({
-                        'id': info['id'],
-                        'filename': info['filename'],
-                        'text': text,
-                    })
-                except Exception as e:
-                    print(f"❌ Error extracting text for {info['filename']}: {e}")
-                    doc.status = 'failed'
-                    db.commit()
-
-        if not documents:
-            batch.status = 'failed'
-            db.commit()
-            return
-
-        # Run batch analysis — use a fresh Orchestrator per batch so that
-        # concurrent batch runs (multiple uploads) don't share a LangGraph
-        # compiled graph instance across threads, which can corrupt iteration state.
-        batch_orchestrator = Orchestrator()
-        result = batch_orchestrator.run_batch(documents, document_type)
-
-        # Save individual analyses
-        for ir in result.get('individual_results', []):
-            doc_id = ir['document_id']
-            r = ir['result']
-            doc = db.query(Document).filter(Document.id == doc_id).first()
-            if not doc:
-                continue
-
-            # Extract scoring details
-            scoring = r.get('scoring_details', {})
-
-            analysis = Analysis(
-                document_id=doc_id,
-                compliance_score=r.get('compliance_score', 0),
-                security_score=r.get('security_score', 0),
-                risk_score=r.get('risk_score', 0),
-                overall_score=r.get('overall_score', 0),
-                completeness_score=scoring.get('completeness', {}).get('score', 0),
-                security_strength_score=scoring.get('security_strength', {}).get('score', 0),
-                coverage_score=scoring.get('coverage', {}).get('score', 0),
-                clarity_score=scoring.get('clarity', {}).get('score', 0),
-                enforcement_score=scoring.get('enforcement_level', {}).get('score', 0),
-                compliance_findings=r.get('compliance_findings', []),
-                security_findings=r.get('security_findings', []),
-                risk_findings=r.get('risk_findings', []),
-                framework_mappings=r.get('framework_mappings', {}),
-                gap_detections=r.get('gap_detections', []),
-                best_practices=r.get('best_practices', []),
-                suggestions=r.get('auto_suggestions', []),
-                risk_level=r.get('risk_level', 'medium'),
-                document_maturity=r.get('document_maturity', 'basic'),
-                recommendations=r.get('recommendations', []),
-                score_rationale=r.get('score_rationale', []),
-                input_tokens=r.get('input_tokens', 0),
-                output_tokens=r.get('output_tokens', 0),
-                total_tokens=r.get('total_tokens', 0),
-                processing_time=r.get('processing_time', 0),
-            )
-            db.add(analysis)
-            doc.status = 'completed'
-
-        # Save batch results
-        synthesis = result.get('synthesis', {})
-        batch.overall_score = synthesis.get('overall_score', 0)
-        batch.risk_level = synthesis.get('risk_level', 'medium')
-        batch.document_maturity = synthesis.get('document_maturity', 'developing')
-        batch.cross_doc_gaps = result.get('cross_doc_gaps', {})
-        batch.synthesis = synthesis
-        
-        # Capture the computed total tokens properly into the synthesis JSON
-        batch_tokens = result.get('total_tokens', 0)
-        batch.synthesis['total_tokens'] = batch_tokens
-        flag_modified(batch, "synthesis") # Tell SQLAlchemy the JSON changed
-
-        batch.recommendations = synthesis.get('top_priorities', [])
-        batch.score_rationale = synthesis.get('score_rationale', [])
-        batch.processing_time = result.get('processing_time', 0)
-        batch.status = 'completed'
-
-        db.commit()
-        
-        # Increment global lifetime counter
-        _increment_lifetime_tokens(db, batch_tokens)
-        print(f"✅ Batch {batch_id} completed: {len(documents)} documents in {result.get('processing_time', 0):.1f}s")
-
-    except Exception as e:
-        print(f"❌ Batch {batch_id} failed: {e}")
-        import traceback; traceback.print_exc()
-        try:
-            batch = db.query(BatchAnalysis).filter(BatchAnalysis.id == batch_id).first()
-            if batch:
-                batch.status = 'failed'
-                db.commit()
-        except Exception:
-            pass
-    finally:
-        db.close()
+# NOTE: _process_document and _process_batch moved to processing.py
+# They are dispatched via Celery tasks (see tasks.py)
 
 
 # ==============================================================================
@@ -620,8 +420,7 @@ def upload_document():
     finally:
         db.close()
 
-    t = threading.Thread(target=_process_document, args=(doc_id, path, document_type), daemon=True)
-    t.start()
+    process_document_task.delay(doc_id, path, document_type)
 
     return jsonify({'message': 'Document uploaded', 'document_id': doc_id, 'status': 'processing'}), 201
 
@@ -753,8 +552,13 @@ def save_document(doc_id):
         chunk_size = body.get('chunk_size', chunk_size)
         overlap = body.get('overlap', overlap)
 
-        # Extract text and add to vector store
-        text = extract_text(doc.file_path)
+        # Use cached Markdown text if available (avoids re-parsing PDF/DOCX)
+        text = doc.markdown_text
+        if not text:
+            text = extract_text(doc.file_path)
+            # Cache for future saves
+            doc.markdown_text = text
+
         chunk_count = vector_store.add_document(
             _tenant_id(), doc_id, doc.original_filename, text,
             chunk_size=chunk_size, overlap=overlap,
@@ -817,8 +621,8 @@ def check_frameworks(doc_id):
         if not selected:
             return jsonify({'error': 'No valid frameworks selected'}), 400
 
-        # Get document text
-        text = extract_text(doc.file_path)
+        # Get document text (use cache if available)
+        text = doc.markdown_text or extract_text(doc.file_path)
         fw_uploaded = framework_store.get_uploaded_frameworks(_tenant_id())
 
         llm = get_llm_client()
@@ -935,12 +739,7 @@ def upload_batch():
         batch_id = batch.id
 
         # Start background processing
-        t = threading.Thread(
-            target=_process_batch,
-            args=(batch_id, documents_info, document_type),
-            daemon=True,
-        )
-        t.start()
+        process_batch_task.delay(batch_id, documents_info, document_type)
 
         return jsonify({
             'message': f'{len(documents_info)} documents uploaded for batch analysis',
@@ -1036,7 +835,7 @@ def save_batch_documents(batch_id):
             if not doc or doc.is_saved:
                 continue
             try:
-                text = extract_text(doc.file_path)
+                text = doc.markdown_text or extract_text(doc.file_path)
                 chunk_count = vector_store.add_document(
                     _tenant_id(), doc.id, doc.original_filename, text,
                     chunk_size=chunk_size, overlap=overlap,
@@ -1181,7 +980,7 @@ def chat_save_file_to_kb():
 
     db = get_db()
     try:
-        result = chat_file_store.save_to_kb(session_id, db)
+        result = chat_file_store.save_to_kb(session_id, db, tenant_id=_tenant_id())
         return jsonify(result)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
@@ -1711,7 +1510,7 @@ def _reindex_worker(worker_tenant_id: int):
             print(f"🔄 Reindex [{i}/{len(docs)}] {doc.original_filename}")
 
             try:
-                text = extract_text(doc.file_path)
+                text = doc.markdown_text or extract_text(doc.file_path)
                 vector_store.add_document(worker_tenant_id, doc.id, doc.original_filename, text)
             except Exception as e:
                 print(f"   ⚠️  Failed to reindex doc {doc.id}: {e}")
@@ -1808,7 +1607,7 @@ def upload_framework():
     file_path = os.path.join(fw_dir, f"{version}_{filename}")
     file.save(file_path)
 
-    # Extract text and index into ChromaDB
+    # Extract text and index into vector store
     try:
         text = extract_text(file_path)
         chunk_count = framework_store.add_framework(_tenant_id(), fw_key, version, filename, text)
@@ -1845,7 +1644,7 @@ def delete_framework(fw_id):
         if not record:
             return jsonify({'error': 'Framework not found'}), 404
 
-        # Remove from ChromaDB
+        # Remove from vector store
         framework_store.remove_framework(_tenant_id(), record.framework_key, record.version, record.filename)
 
         # Remove file
@@ -1858,111 +1657,6 @@ def delete_framework(fw_id):
         db.delete(record)
         db.commit()
         return jsonify({'message': 'Framework deleted'})
-    finally:
-        db.close()
-
-
-# ---- System Settings API (backward compat) ----------------------------------
-
-@app.route('/api/system/settings/api-key', methods=['GET'])
-def get_api_key():
-    """Return the first active app's key (backward compatibility)."""
-    db = get_db()
-    try:
-        app_entry = db.query(AuthorizedApp).filter_by(is_active=True).first()
-        if app_entry:
-            return jsonify({'api_key': app_entry.api_key})
-        return jsonify({'api_key': ''})
-    finally:
-        db.close()
-
-
-@app.route('/api/system/settings/api-key/refresh', methods=['POST'])
-def refresh_api_key():
-    """Rotate the first app's key (backward compatibility)."""
-    db = get_db()
-    try:
-        app_entry = db.query(AuthorizedApp).first()
-        new_key = f"sk-{uuid.uuid4()}"
-        if app_entry:
-            app_entry.api_key = new_key
-            db.commit()
-        return jsonify({'api_key': new_key})
-    finally:
-        db.close()
-
-
-# ---- Authorized Applications CRUD (tenant-scoped) ---------------------------
-
-@app.route('/api/system/apps', methods=['GET'])
-def list_apps():
-    """List authorized applications for the current tenant."""
-    db = get_db()
-    try:
-        apps = db.query(AuthorizedApp).filter(
-            AuthorizedApp.tenant_id == _tenant_id()
-        ).order_by(AuthorizedApp.created_at.desc()).all()
-        return jsonify({'apps': [a.to_dict() for a in apps]})
-    finally:
-        db.close()
-
-
-@app.route('/api/system/apps', methods=['POST'])
-def create_app():
-    """Register a new authorized application for the current tenant."""
-    data = request.get_json()
-    name = (data or {}).get('name', '').strip()
-    if not name:
-        return jsonify({'error': 'Application name is required'}), 400
-
-    db = get_db()
-    try:
-        new_key = f"sk-{uuid.uuid4()}"
-        app_entry = AuthorizedApp(
-            tenant_id=_tenant_id(),
-            name=name,
-            api_key=new_key,
-            is_active=True,
-            is_admin=False,
-        )
-        db.add(app_entry)
-        db.commit()
-        db.refresh(app_entry)
-        return jsonify(app_entry.to_dict()), 201
-    finally:
-        db.close()
-
-
-@app.route('/api/system/apps/<int:app_id>', methods=['DELETE'])
-def delete_app(app_id):
-    """Revoke and delete an authorized application (must belong to current tenant)."""
-    db = get_db()
-    try:
-        app_entry = db.query(AuthorizedApp).filter(
-            AuthorizedApp.id == app_id, AuthorizedApp.tenant_id == _tenant_id()
-        ).first()
-        if not app_entry:
-            return jsonify({'error': 'Application not found'}), 404
-        db.delete(app_entry)
-        db.commit()
-        return jsonify({'message': f'Application "{app_entry.name}" has been revoked.'})
-    finally:
-        db.close()
-
-
-@app.route('/api/system/apps/<int:app_id>/toggle', methods=['PATCH'])
-def toggle_app(app_id):
-    """Enable or disable an authorized application (must belong to current tenant)."""
-    db = get_db()
-    try:
-        app_entry = db.query(AuthorizedApp).filter(
-            AuthorizedApp.id == app_id, AuthorizedApp.tenant_id == _tenant_id()
-        ).first()
-        if not app_entry:
-            return jsonify({'error': 'Application not found'}), 404
-        app_entry.is_active = not app_entry.is_active
-        db.commit()
-        return jsonify(app_entry.to_dict())
     finally:
         db.close()
 

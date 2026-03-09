@@ -47,8 +47,6 @@ tags:
     description: Analysis history, score trends, and token usage
   - name: Settings
     description: LLM provider selection and Ollama management
-  - name: System
-    description: API key and application management
   - name: Admin
     description: Tenant and key management (is_admin required)
   - name: Provisioning
@@ -825,92 +823,6 @@ paths:
       responses:
         200:
           description: Counters reset
-
-# ============================================================
-# SYSTEM
-# ============================================================
-  /system/apps:
-    get:
-      tags: [System]
-      summary: List authorized applications / API keys
-      responses:
-        200:
-          description: List of API keys for the current tenant
-          schema:
-            type: object
-            properties:
-              apps:
-                type: array
-                items:
-                  $ref: '#/definitions/AppSummary'
-    post:
-      tags: [System]
-      summary: Create an application and API key
-      parameters:
-        - in: body
-          name: body
-          required: true
-          schema:
-            type: object
-            required: [name]
-            properties:
-              name:
-                type: string
-                example: SIEM Integration
-      responses:
-        201:
-          description: New app created with API key
-          schema:
-            $ref: '#/definitions/AppDetail'
-
-  /system/settings/api-key:
-    get:
-      tags: [System]
-      summary: Get current API key
-      description: Returns the caller's own API key details.
-      responses:
-        200:
-          description: API key info
-
-  /system/settings/api-key/refresh:
-    post:
-      tags: [System]
-      summary: Refresh API key
-      description: Regenerates the caller's own API key. The old key is invalidated.
-      responses:
-        200:
-          description: New API key generated
-          schema:
-            type: object
-            properties:
-              api_key:
-                type: string
-
-  /system/apps/{id}:
-    delete:
-      tags: [System]
-      summary: Delete an application
-      parameters:
-        - name: id
-          in: path
-          required: true
-          type: integer
-      responses:
-        200:
-          description: Application deleted
-
-  /system/apps/{id}/toggle:
-    patch:
-      tags: [System]
-      summary: Toggle application active/inactive
-      parameters:
-        - name: id
-          in: path
-          required: true
-          type: integer
-      responses:
-        200:
-          description: Application toggled
 
 # ============================================================
 # ADMIN — requires is_admin flag

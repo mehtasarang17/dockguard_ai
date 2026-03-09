@@ -13,11 +13,17 @@ class BedrockClient:
 
     Supports hybrid model routing: a primary model and a fast model.
     Use invoke() for the default model, invoke_fast() for the cheaper/faster model.
+
+    This client is designed to be used as a **singleton** (via llm_factory).
+    Token tracking is handled externally via TokenTracker — do NOT store
+    per-request state on this instance.
     """
 
     def __init__(self):
         self.model_id = Config.BEDROCK_MODEL_ID
         self.model_id_fast = Config.BEDROCK_MODEL_ID_FAST
+
+        # Legacy per-instance counters (kept for backward compat, e.g. chat)
         self.total_input_tokens = 0
         self.total_output_tokens = 0
 
@@ -50,7 +56,7 @@ class BedrockClient:
         self.total_output_tokens = 0
 
     def invoke(self, prompt: str, max_tokens: int = 4096, temperature: float = 0.3,
-               model_override: str = None) -> str:
+               model_override: str = None, tracker=None) -> str:
         """Send a prompt to Amazon Nova and return the text response.
 
         Args:
@@ -58,13 +64,15 @@ class BedrockClient:
             max_tokens: Max tokens in response.
             temperature: Sampling temperature (lower = more deterministic).
             model_override: If set, use this model ID instead of the default.
+            tracker: Optional TokenTracker for per-analysis accounting.
         """
         model_id = model_override or self.model_id
         if self.use_bearer:
-            return self._invoke_bearer(prompt, max_tokens, temperature, model_id)
-        return self._invoke_converse(prompt, max_tokens, temperature, model_id)
+            return self._invoke_bearer(prompt, max_tokens, temperature, model_id, tracker)
+        return self._invoke_converse(prompt, max_tokens, temperature, model_id, tracker)
 
-    def invoke_fast(self, prompt: str, max_tokens: int = 4096, temperature: float = 0.2) -> str:
+    def invoke_fast(self, prompt: str, max_tokens: int = 4096, temperature: float = 0.2,
+                    tracker=None) -> str:
         """Send a prompt using the fast/cheap model.
 
         Falls back to the primary model if the fast model is unavailable
@@ -73,17 +81,17 @@ class BedrockClient:
         if self.model_id_fast and self.model_id_fast != self.model_id:
             try:
                 return self.invoke(prompt, max_tokens=max_tokens, temperature=temperature,
-                                   model_override=self.model_id_fast)
+                                   model_override=self.model_id_fast, tracker=tracker)
             except Exception as e:
                 if not getattr(self, '_fast_fallback_warned', False):
                     print(f"⚠️  Fast model ({self.model_id_fast}) unavailable, falling back to primary model. Error: {e}")
                     self._fast_fallback_warned = True
         # Fall back to primary model
-        return self.invoke(prompt, max_tokens=max_tokens, temperature=temperature)
+        return self.invoke(prompt, max_tokens=max_tokens, temperature=temperature, tracker=tracker)
 
     # ----- Private helpers ------------------------------------------------------
     def _invoke_converse(self, prompt: str, max_tokens: int, temperature: float,
-                         model_id: str) -> str:
+                         model_id: str, tracker=None) -> str:
         """Call Bedrock Converse API (works with Amazon Nova and other supported models)."""
         resp = self.client.converse(
             modelId=model_id,
@@ -91,12 +99,16 @@ class BedrockClient:
             inferenceConfig={"maxTokens": max_tokens, "temperature": temperature},
         )
         if 'usage' in resp:
-            self.total_input_tokens += resp['usage'].get('inputTokens', 0)
-            self.total_output_tokens += resp['usage'].get('outputTokens', 0)
+            inp = resp['usage'].get('inputTokens', 0)
+            out = resp['usage'].get('outputTokens', 0)
+            self.total_input_tokens += inp
+            self.total_output_tokens += out
+            if tracker:
+                tracker.record(input_tokens=inp, output_tokens=out)
         return resp['output']['message']['content'][0]['text']
 
     def _invoke_bearer(self, prompt: str, max_tokens: int, temperature: float,
-                       model_id: str) -> str:
+                       model_id: str, tracker=None) -> str:
         """Call Bedrock Converse API via Bearer token auth (HTTP)."""
         url = (
             f"https://bedrock-runtime.{Config.AWS_REGION}.amazonaws.com"
@@ -118,8 +130,12 @@ class BedrockClient:
         data = resp.json()
 
         if 'usage' in data:
-            self.total_input_tokens += data['usage'].get('inputTokens', 0)
-            self.total_output_tokens += data['usage'].get('outputTokens', 0)
+            inp = data['usage'].get('inputTokens', 0)
+            out = data['usage'].get('outputTokens', 0)
+            self.total_input_tokens += inp
+            self.total_output_tokens += out
+            if tracker:
+                tracker.record(input_tokens=inp, output_tokens=out)
 
         return data['output']['message']['content'][0]['text']
 

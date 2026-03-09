@@ -46,9 +46,7 @@
             <a href="#" class="nav-item" data-page="history" id="nav-history">
                 <i class="fas fa-clock-rotate-left"></i><span>History</span>
             </a>
-            <a href="#" class="nav-item" id="nav-settings">
-                <i class="fas fa-cog"></i><span>Settings</span>
-            </a>
+
         </nav>
 
         <div class="sidebar-footer">
@@ -622,10 +620,7 @@
 
             <!-- Settings Tabs -->
             <div class="settings-tabs">
-                <button class="settings-tab active" id="stab-keys" onclick="switchSettingsTab('keys')">
-                    <i class="fas fa-shield-halved"></i> API Keys
-                </button>
-                <button class="settings-tab" id="stab-tenants" onclick="switchSettingsTab('tenants')">
+                <button class="settings-tab active" id="stab-tenants" onclick="switchSettingsTab('tenants')">
                     <i class="fas fa-building"></i> Tenants
                 </button>
                 <button class="settings-tab" id="stab-docs" onclick="switchSettingsTab('docs')">
@@ -633,24 +628,8 @@
                 </button>
             </div>
 
-            <!-- Tab: API Keys -->
-            <div class="settings-tab-panel" id="spanel-keys">
-                <p class="settings-desc">Manage which external applications can access the DocGuard AI API. Each app
-                    gets a unique API key.</p>
-                <div id="appsList" class="apps-list">
-                    <!-- Populated by JS -->
-                </div>
-                <div class="add-app-form" id="addAppForm">
-                    <input type="text" id="newAppNameInput" placeholder="Application name (e.g. SIEM Integration)"
-                        class="app-name-input">
-                    <button class="btn btn-primary-sm" id="addAppBtn">
-                        <i class="fas fa-plus"></i> Add
-                    </button>
-                </div>
-            </div>
-
             <!-- Tab: Tenants (admin only) -->
-            <div class="settings-tab-panel" id="spanel-tenants" style="display:none;">
+            <div class="settings-tab-panel" id="spanel-tenants">
                 <p class="settings-desc">Create and manage tenants. Each tenant has isolated documents, knowledge base,
                     and API keys.</p>
 
