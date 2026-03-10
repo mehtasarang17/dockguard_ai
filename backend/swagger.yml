@@ -1,16 +1,25 @@
 swagger: "2.0"
 info:
-  title: DocGuard AI API
+  title: DocGuard AI — Document Analysis Platform
   description: |
-    AI-powered document compliance analysis platform with multi-tenant support.
+    Self-hosted document analysis engine with database-per-tenant isolation for HIPAA and compliance.
+
+    ## Multi-Tenant Architecture
+
+    **Database-per-tenant isolation**: each provisioned tenant gets a dedicated PostgreSQL database.
+    The central database stores only auth credentials and tenant metadata.
+    Existing data (default tenant) remains in the central database for backward compatibility.
 
     ## Authentication
-    All `/api/` endpoints require a Bearer token:
+
+    All endpoints (except provisioning) require an API key:
+
     ```
     Authorization: Bearer sk-your-key-here
     ```
-    Click **Authorize** (🔒) above and enter your key.
-  version: "1.0.0"
+
+    Keys expire after 90 days by default. Use the refresh token endpoint to rotate.
+  version: "2.0.0"
   contact:
     name: DocGuard AI
 
@@ -1083,6 +1092,9 @@ definitions:
         type: string
       slug:
         type: string
+      db_name:
+        type: string
+        description: "PostgreSQL database name for this tenant's isolated data."
       is_active:
         type: boolean
       created_at:

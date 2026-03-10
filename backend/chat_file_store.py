@@ -3,7 +3,7 @@ Chat File Store — Persistent session store for files uploaded in Knowledge Cha
 
 Uses pgvector (chat_file_chunks table) for semantic search of uploaded files.
 Sessions are stored on disk under UPLOAD_FOLDER/_chat_sessions/<session_id>/
-with a metadata JSON file. Chunks + embeddings go into PostgreSQL.
+with a metadata JSON file. Chunks + embeddings go into the tenant's PostgreSQL database.
 """
 
 import os
@@ -14,7 +14,8 @@ import shutil
 
 from embedding import embed_texts, embed_query
 from vector_store import _chunk_text, add_document, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
-from models import SessionLocal, ChatFileChunk
+from models import ChatFileChunk
+from tenant_db import get_tenant_session
 from config import Config
 from extractor import extract_text
 from sqlalchemy import text as sa_text
@@ -27,7 +28,7 @@ def _session_dir(session_id: str) -> str:
     return os.path.join(_SESSIONS_DIR, session_id)
 
 
-def _cleanup_expired():
+def _cleanup_expired(db_name: str):
     """Remove sessions older than TTL."""
     if not os.path.exists(_SESSIONS_DIR):
         return
@@ -39,17 +40,17 @@ def _cleanup_expired():
                 with open(meta_path) as f:
                     meta = json.load(f)
                 if now - meta.get('created_at', 0) > SESSION_TTL:
-                    clear_session(sid)
+                    clear_session(db_name, sid)
             except Exception:
                 pass
 
 
-def upload_file(file_path: str, filename: str) -> dict:
+def upload_file(db_name: str, file_path: str, filename: str) -> dict:
     """
     Extract, chunk, and index a file for temporary chat use.
     Returns { session_id, filename, chunk_count, char_count }.
     """
-    _cleanup_expired()
+    _cleanup_expired(db_name)
 
     text = extract_text(file_path)
     if not text or not text.strip():
@@ -65,7 +66,7 @@ def upload_file(file_path: str, filename: str) -> dict:
 
     # Embed chunks and store in pgvector
     embeddings = embed_texts(chunks)
-    db = SessionLocal()
+    db = get_tenant_session(db_name)
     try:
         for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
             db.add(ChatFileChunk(
@@ -117,13 +118,13 @@ def _load_meta(session_id: str) -> dict | None:
         return None
 
 
-def search_file(session_id: str, query: str, top_k: int = 5) -> list[dict]:
+def search_file(db_name: str, session_id: str, query: str, top_k: int = 5) -> list[dict]:
     """Search the uploaded file's chunks for relevant content."""
     meta = _load_meta(session_id)
     if not meta:
         return []
 
-    db = SessionLocal()
+    db = get_tenant_session(db_name)
     try:
         count = db.query(ChatFileChunk).filter(
             ChatFileChunk.session_id == session_id
@@ -175,7 +176,7 @@ def get_session(session_id: str) -> dict | None:
     }
 
 
-def save_to_kb(session_id: str, db_session, tenant_id: int = 1) -> dict:
+def save_to_kb(db_name: str, session_id: str, db_session, tenant_id: int = 1) -> dict:
     """
     Persist the uploaded file to the permanent Knowledge Base.
     Creates a Document record + indexes in the vector store.
@@ -216,12 +217,12 @@ def save_to_kb(session_id: str, db_session, tenant_id: int = 1) -> dict:
     db_session.flush()  # get doc.id
 
     # Index in vector store
-    chunk_count = add_document(tenant_id, doc.id, filename, meta['text'])
+    chunk_count = add_document(db_name, tenant_id, doc.id, filename, meta['text'])
 
     db_session.commit()
 
     # Clean up session
-    clear_session(session_id)
+    clear_session(db_name, session_id)
 
     print(f"💾 Chat file saved to KB: {filename} → doc_id={doc.id}, {chunk_count} chunks")
     return {
@@ -231,10 +232,10 @@ def save_to_kb(session_id: str, db_session, tenant_id: int = 1) -> dict:
     }
 
 
-def clear_session(session_id: str):
+def clear_session(db_name: str, session_id: str):
     """Remove a session and all its files + DB chunks."""
     # Remove from database
-    db = SessionLocal()
+    db = get_tenant_session(db_name)
     try:
         db.query(ChatFileChunk).filter(
             ChatFileChunk.session_id == session_id

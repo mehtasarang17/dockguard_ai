@@ -20,7 +20,7 @@ from config import Config
 # Per-question answering (reusable across formats)
 # ---------------------------------------------------------------------------
 
-def answer_question(question: str, llm_client, tenant_id: int, kb_source_names: set = None) -> dict:
+def answer_question(question: str, llm_client, db_name: str, tenant_id: int, kb_source_names: set = None) -> dict:
     """
     Search KB for a question, get LLM answer with citation.
     Returns { answer, source, kb_chunks_used }.
@@ -30,7 +30,7 @@ def answer_question(question: str, llm_client, tenant_id: int, kb_source_names: 
         return {'answer': '', 'source': '', 'kb_chunks_used': 0}
 
     # Search KB
-    hits = vector_store.search(tenant_id, question, top_k=6)
+    hits = vector_store.search(db_name, tenant_id, question, top_k=6)
     hits = [h for h in hits if h.get('filename') and h['filename'] != 'unknown' and h.get('doc_id', -1) != -1]
 
     if hits:
@@ -86,7 +86,7 @@ Answer:"""
 # Format-specific fillers
 # ---------------------------------------------------------------------------
 
-def _fill_xlsx(input_path: str, output_path: str, llm_client, tenant_id: int) -> dict:
+def _fill_xlsx(input_path: str, output_path: str, llm_client, db_name: str, tenant_id: int) -> dict:
     """Fill an xlsx file: read questions from column A, write answers in column B, sources in column C."""
     import openpyxl
     from openpyxl.styles import Font, Alignment, PatternFill
@@ -120,7 +120,7 @@ def _fill_xlsx(input_path: str, output_path: str, llm_client, tenant_id: int) ->
                 continue
 
             total_questions += 1
-            result = answer_question(question, llm_client, tenant_id)
+            result = answer_question(question, llm_client, db_name, tenant_id)
             if result['answer']:
                 answer_text = result['answer']
                 ws.cell(row_idx, 2, answer_text)
@@ -136,7 +136,7 @@ def _fill_xlsx(input_path: str, output_path: str, llm_client, tenant_id: int) ->
     return {'total_questions': total_questions, 'total_answered': total_answered, 'qa_pairs': qa_pairs}
 
 
-def _fill_docx(input_path: str, output_path: str, llm_client, tenant_id: int) -> dict:
+def _fill_docx(input_path: str, output_path: str, llm_client, db_name: str, tenant_id: int) -> dict:
     """Fill a docx file: find question paragraphs, insert answer paragraphs below."""
     from docx import Document
     from docx.shared import Pt, RGBColor
@@ -155,7 +155,7 @@ def _fill_docx(input_path: str, output_path: str, llm_client, tenant_id: int) ->
 
     for idx, question in reversed(paragraphs_to_process):
         total_questions += 1
-        result = answer_question(question, llm_client, tenant_id)
+        result = answer_question(question, llm_client, db_name, tenant_id)
         if result['answer']:
             total_answered += 1
             answer_para = doc.paragraphs[idx]._element
@@ -183,7 +183,7 @@ def _fill_docx(input_path: str, output_path: str, llm_client, tenant_id: int) ->
     return {'total_questions': total_questions, 'total_answered': total_answered, 'qa_pairs': qa_pairs}
 
 
-def _fill_txt(input_path: str, output_path: str, llm_client, tenant_id: int) -> dict:
+def _fill_txt(input_path: str, output_path: str, llm_client, db_name: str, tenant_id: int) -> dict:
     """Fill a txt file: find question lines, append answers below."""
     with open(input_path, 'r', encoding='utf-8', errors='replace') as f:
         lines = f.readlines()
@@ -198,7 +198,7 @@ def _fill_txt(input_path: str, output_path: str, llm_client, tenant_id: int) -> 
         text = line.strip()
         if text and len(text) > 10 and text.endswith('?'):
             total_questions += 1
-            result = answer_question(text, llm_client, tenant_id)
+            result = answer_question(text, llm_client, db_name, tenant_id)
             if result['answer']:
                 total_answered += 1
                 output_lines.append(f"  → {result['answer']}")
@@ -212,7 +212,7 @@ def _fill_txt(input_path: str, output_path: str, llm_client, tenant_id: int) -> 
     return {'total_questions': total_questions, 'total_answered': total_answered, 'qa_pairs': qa_pairs}
 
 
-def _fill_csv(input_path: str, output_path: str, llm_client, tenant_id: int) -> dict:
+def _fill_csv(input_path: str, output_path: str, llm_client, db_name: str, tenant_id: int) -> dict:
     """Fill a csv file: add Answer and Source columns."""
     with open(input_path, 'r', encoding='utf-8', errors='replace') as f:
         reader = csv.reader(f)
@@ -235,7 +235,7 @@ def _fill_csv(input_path: str, output_path: str, llm_client, tenant_id: int) -> 
 
         if question and len(question) > 10:
             total_questions += 1
-            result = answer_question(question, llm_client, tenant_id)
+            result = answer_question(question, llm_client, db_name, tenant_id)
             if result['answer']:
                 total_answered += 1
                 output_rows.append(row + [result['answer'], result['source']])
@@ -258,7 +258,7 @@ def _fill_csv(input_path: str, output_path: str, llm_client, tenant_id: int) -> 
 
 SUPPORTED_FORMATS = {'.xlsx', '.xls', '.docx', '.txt', '.csv'}
 
-def fill_document(input_path: str, filename: str, llm_client, tenant_id: int) -> dict:
+def fill_document(input_path: str, filename: str, llm_client, db_name: str, tenant_id: int) -> dict:
     """
     Fill a document with answers. Returns { output_path, output_filename, stats }.
     """
@@ -277,13 +277,13 @@ def fill_document(input_path: str, filename: str, llm_client, tenant_id: int) ->
 
     # Dispatch to format handler
     if ext in ('.xlsx', '.xls'):
-        stats = _fill_xlsx(input_path, output_path, llm_client, tenant_id)
+        stats = _fill_xlsx(input_path, output_path, llm_client, db_name, tenant_id)
     elif ext == '.docx':
-        stats = _fill_docx(input_path, output_path, llm_client, tenant_id)
+        stats = _fill_docx(input_path, output_path, llm_client, db_name, tenant_id)
     elif ext == '.txt':
-        stats = _fill_txt(input_path, output_path, llm_client, tenant_id)
+        stats = _fill_txt(input_path, output_path, llm_client, db_name, tenant_id)
     elif ext == '.csv':
-        stats = _fill_csv(input_path, output_path, llm_client, tenant_id)
+        stats = _fill_csv(input_path, output_path, llm_client, db_name, tenant_id)
     else:
         raise ValueError(f"Unsupported format: {ext}")
 

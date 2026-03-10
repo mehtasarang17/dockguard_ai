@@ -1,11 +1,12 @@
 """
-Framework Store — pgvector-based storage for compliance framework standards (per-tenant).
+Framework Store — pgvector-based storage for compliance framework standards.
 
-Each framework chunk is stored in the framework_chunks table with tenant_id
-and framework_key for isolation.
+Per-tenant isolation via dedicated tenant databases.
+The db_name parameter tells the store which tenant database to connect to.
 """
 
-from models import SessionLocal, FrameworkChunk
+from models import FrameworkChunk
+from tenant_db import get_tenant_session
 from embedding import embed_texts, embed_query
 from sqlalchemy import text as sa_text
 
@@ -33,9 +34,9 @@ def _chunk_text(text: str) -> list[str]:
 
 # ---- Public API --------------------------------------------------------------
 
-def add_framework(tenant_id: int, framework_key: str, version: str, filename: str, text: str) -> int:
+def add_framework(db_name: str, tenant_id: int, framework_key: str, version: str, filename: str, text: str) -> int:
     """Chunk, embed, and store a framework document. Returns chunk count."""
-    db = SessionLocal()
+    db = get_tenant_session(db_name)
     try:
         chunks = _chunk_text(text)
         if not chunks:
@@ -62,9 +63,9 @@ def add_framework(tenant_id: int, framework_key: str, version: str, filename: st
         db.close()
 
 
-def remove_framework(tenant_id: int, framework_key: str, version: str, filename: str):
+def remove_framework(db_name: str, tenant_id: int, framework_key: str, version: str, filename: str):
     """Remove all chunks for a specific framework version/file."""
-    db = SessionLocal()
+    db = get_tenant_session(db_name)
     try:
         deleted = db.query(FrameworkChunk).filter(
             FrameworkChunk.tenant_id == tenant_id,
@@ -82,9 +83,9 @@ def remove_framework(tenant_id: int, framework_key: str, version: str, filename:
         db.close()
 
 
-def search_framework(tenant_id: int, framework_key: str, query: str, top_k: int = 8) -> list[dict]:
+def search_framework(db_name: str, tenant_id: int, framework_key: str, query: str, top_k: int = 8) -> list[dict]:
     """Search within a tenant's specific framework for relevant sections."""
-    db = SessionLocal()
+    db = get_tenant_session(db_name)
     try:
         count = db.query(FrameworkChunk).filter(
             FrameworkChunk.tenant_id == tenant_id,
@@ -123,9 +124,9 @@ def search_framework(tenant_id: int, framework_key: str, query: str, top_k: int 
         db.close()
 
 
-def get_uploaded_frameworks(tenant_id: int) -> dict:
+def get_uploaded_frameworks(db_name: str, tenant_id: int) -> dict:
     """Return { framework_key: bool } indicating which frameworks have indexed content."""
-    db = SessionLocal()
+    db = get_tenant_session(db_name)
     try:
         status = {}
         for key in FRAMEWORK_KEYS:

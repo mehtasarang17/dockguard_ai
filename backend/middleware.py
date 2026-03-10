@@ -2,13 +2,13 @@
 Authentication middleware for DocGuard AI.
 
 Enforces API key auth on all /api/ routes, checks key expiration,
-populates g.tenant_id and g.is_admin per request.
+populates g.tenant_id, g.is_admin, and g.tenant_db_name per request.
 """
 import json
 from datetime import datetime
 from flask import request, jsonify, g
 from config import Config
-from models import AuthorizedApp, get_db
+from models import AuthorizedApp, Tenant, get_central_db
 
 
 # Routes that do NOT require any authentication
@@ -17,13 +17,35 @@ AUTH_EXEMPT_ROUTES = {'health', 'provision', 'provision_refresh_key', 'verify_ap
 # Swagger resources are public (no key needed to view docs)
 SWAGGER_PREFIXES = ('/apispec.json',)
 
+# Cached default tenant db_name (populated on first request)
+_default_tenant_db_name = None
+
+
+def _resolve_default_db_name():
+    """Look up the default tenant's db_name (cached for the process lifetime)."""
+    global _default_tenant_db_name
+    if _default_tenant_db_name is not None:
+        return _default_tenant_db_name
+
+    db = get_central_db()
+    try:
+        tenant = db.query(Tenant).filter_by(id=1).first()
+        if tenant and tenant.db_name:
+            _default_tenant_db_name = tenant.db_name
+        else:
+            # Fallback: use the central database name
+            _default_tenant_db_name = Config.DATABASE_URL.rsplit('/', 1)[1]
+        return _default_tenant_db_name
+    finally:
+        db.close()
+
 
 def register_middleware(app):
     """Attach the before_request auth middleware to the Flask app."""
 
     @app.before_request
     def require_api_key():
-        """Enforce API key auth on all /api/ routes; populate g.tenant_id & g.is_admin."""
+        """Enforce API key auth on all /api/ routes; populate g.tenant_id, g.is_admin & g.tenant_db_name."""
         # Allow Swagger UI and spec to load without a key
         if any(request.path.startswith(p) for p in SWAGGER_PREFIXES):
             return None
@@ -46,7 +68,7 @@ def register_middleware(app):
             api_key = auth_header[7:].strip()
 
         if api_key:
-            db = get_db()
+            db = get_central_db()
             try:
                 app_entry = db.query(AuthorizedApp).filter_by(api_key=api_key).first()
                 if not app_entry:
@@ -68,6 +90,15 @@ def register_middleware(app):
                 db.commit()
                 g.tenant_id = app_entry.tenant_id
                 g.is_admin = bool(app_entry.is_admin)
+
+                # Resolve the tenant's database name
+                tenant = db.query(Tenant).filter_by(id=app_entry.tenant_id).first()
+                if tenant and tenant.db_name:
+                    g.tenant_db_name = tenant.db_name
+                else:
+                    # Fallback: use the central database
+                    g.tenant_db_name = Config.DATABASE_URL.rsplit('/', 1)[1]
+
                 return None
             finally:
                 db.close()
@@ -87,6 +118,7 @@ def register_middleware(app):
             g.tenant_id = 1
             g.is_admin = True
             g._internal_token_auth = True
+            g.tenant_db_name = _resolve_default_db_name()
             return None
 
         return jsonify({

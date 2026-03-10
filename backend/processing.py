@@ -6,22 +6,30 @@ This module contains the core background processing functions that:
 1. Extract text from uploaded files
 2. Run the analysis pipeline via the Orchestrator
 3. Save results to the database
+
+Each function receives a db_name parameter to connect to the correct
+tenant database (database-per-tenant isolation).
 """
 
 import time
 import traceback
 
-from models import get_db, Document, Analysis, BatchAnalysis, SystemSettings
+from models import get_central_db, Document, Analysis, BatchAnalysis, SystemSettings
+from tenant_db import get_tenant_session
 from extractor import extract_text
 from agents.orchestrator import Orchestrator
 import framework_store
 from sqlalchemy.orm.attributes import flag_modified
 
 
-def _increment_lifetime_tokens(db, token_count: int):
-    """Atomically add token_count to the lifetime_tokens SystemSettings record."""
+def _increment_lifetime_tokens(token_count: int):
+    """Atomically add token_count to the lifetime_tokens SystemSettings record.
+
+    Uses the central DB since SystemSettings is a global/admin table.
+    """
     if not token_count:
         return
+    db = get_central_db()
     try:
         setting = db.query(SystemSettings).filter(SystemSettings.key == 'lifetime_tokens').first()
         if setting:
@@ -32,11 +40,13 @@ def _increment_lifetime_tokens(db, token_count: int):
         db.commit()
     except Exception as e:
         print(f"⚠️  Failed to update lifetime_tokens: {e}")
+    finally:
+        db.close()
 
 
-def process_document(document_id: int, file_path: str, document_type: str):
+def process_document(db_name: str, document_id: int, file_path: str, document_type: str):
     """Analyse a single document end-to-end (text extraction → pipeline → DB save)."""
-    db = get_db()
+    db = get_tenant_session(db_name)
     try:
         doc = db.query(Document).filter(Document.id == document_id).first()
         doc.status = 'processing'
@@ -91,7 +101,7 @@ def process_document(document_id: int, file_path: str, document_type: str):
         db.add(analysis)
         doc.status = 'completed'
         db.commit()
-        _increment_lifetime_tokens(db, result.get('total_tokens', 0))
+        _increment_lifetime_tokens(result.get('total_tokens', 0))
         print(f"✅ Document {document_id} analysed in {elapsed:.1f}s")
 
     except Exception as e:
@@ -105,9 +115,9 @@ def process_document(document_id: int, file_path: str, document_type: str):
         db.close()
 
 
-def process_batch(batch_id: int, documents_info: list, document_type: str):
+def process_batch(db_name: str, batch_id: int, documents_info: list, document_type: str):
     """Analyse multiple documents and run cross-doc synthesis."""
-    db = get_db()
+    db = get_tenant_session(db_name)
     try:
         batch = db.query(BatchAnalysis).filter(BatchAnalysis.id == batch_id).first()
         if not batch:
@@ -213,7 +223,7 @@ def process_batch(batch_id: int, documents_info: list, document_type: str):
         db.commit()
 
         # Increment global lifetime counter
-        _increment_lifetime_tokens(db, batch_tokens)
+        _increment_lifetime_tokens(batch_tokens)
         print(f"✅ Batch {batch_id} completed: {len(documents)} documents in {result.get('processing_time', 0):.1f}s")
 
     except Exception as e:

@@ -11,7 +11,11 @@ from sqlalchemy.orm.attributes import flag_modified
 from werkzeug.utils import secure_filename
 
 from config import Config
-from models import init_db, get_db, SessionLocal, Document, Analysis, ChatHistory, SystemSettings, FrameworkStandard, BatchAnalysis, AuthorizedApp, Tenant
+from models import (
+    init_db, get_central_db, Document, Analysis, ChatHistory,
+    SystemSettings, FrameworkStandard, BatchAnalysis, AuthorizedApp, Tenant,
+)
+from tenant_db import get_tenant_session, create_tenant_database
 from extractor import extract_text
 from agents.orchestrator import Orchestrator
 from agents.bedrock_client import BedrockClient
@@ -34,8 +38,10 @@ init_db()
 
 # Initialize default tenant + admin app if none exist
 def init_default_app():
+    """Ensure the default tenant exists with the correct admin key and db_name."""
     try:
-        with SessionLocal() as db:
+        db = get_central_db()
+        try:
             # Ensure a default tenant exists
             tenant = db.query(Tenant).filter_by(slug='default').first()
             if not tenant:
@@ -43,6 +49,12 @@ def init_default_app():
                 db.add(tenant)
                 db.flush()  # get tenant.id before committing
                 print(f"🏢 Created default tenant (id={tenant.id})")
+
+            # Set db_name to the central database (backward compat — no migration)
+            if not tenant.db_name:
+                central_db_name = Config.DATABASE_URL.rsplit('/', 1)[1]
+                tenant.db_name = central_db_name
+                print(f"📦 Set default tenant db_name to '{central_db_name}'")
 
             # Enforce the Admin API Key from the environment
             expected_admin_key = Config.ADMIN_API_KEY
@@ -54,7 +66,6 @@ def init_default_app():
             ).first()
 
             if not admin_app:
-                # If there's NO 'Default Admin' app, create it with the strict environment key
                 app_entry = AuthorizedApp(
                     tenant_id=tenant.id,
                     name='Default Admin',
@@ -65,8 +76,6 @@ def init_default_app():
                 db.add(app_entry)
                 print(f"🔑 Created default admin app with key from .env")
             else:
-                # If it already exists, ENFORCE that the key matches the current .env variable
-                # This automatically rotates the key if the .env file is changed.
                 if admin_app.api_key != expected_admin_key:
                     admin_app.api_key = expected_admin_key
                     admin_app.is_active = True
@@ -78,6 +87,8 @@ def init_default_app():
                 {'tenant_id': tenant.id}
             )
             db.commit()
+        finally:
+            db.close()
     except Exception as e:
         print(f"Error initializing default app: {e}")
 
@@ -95,6 +106,16 @@ register_middleware(app)
 def _tenant_id() -> int:
     """Return the tenant_id for the current request."""
     return getattr(g, 'tenant_id', 1)
+
+
+def _tenant_db_name() -> str:
+    """Return the tenant's database name for the current request."""
+    return getattr(g, 'tenant_db_name', Config.DATABASE_URL.rsplit('/', 1)[1])
+
+
+def _get_tenant_db():
+    """Return a SQLAlchemy session for the current tenant's database."""
+    return get_tenant_session(_tenant_db_name())
 
 
 def _require_admin():
@@ -148,7 +169,7 @@ def provision():
     if not name or not slug:
         return jsonify({'error': 'name and slug are required'}), 400
 
-    db = get_db()
+    db = get_central_db()
     try:
         # Idempotent: if the slug already exists, return the existing tenant
         existing = db.query(Tenant).filter_by(slug=slug).first()
@@ -170,6 +191,10 @@ def provision():
         tenant = Tenant(name=name, slug=slug, is_active=True)
         db.add(tenant)
         db.flush()
+
+        # Create a dedicated database for this tenant
+        tenant_db_name = create_tenant_database(slug)
+        tenant.db_name = tenant_db_name
 
         # Create first API key with expiration + refresh token
         first_key = f"sk-{uuid.uuid4()}"
@@ -217,7 +242,7 @@ def provision_refresh_key():
     if not refresh_token:
         return jsonify({'error': 'refresh_token is required'}), 400
 
-    db = get_db()
+    db = get_central_db()
     try:
         app_entry = db.query(AuthorizedApp).filter_by(refresh_token=refresh_token).first()
         if not app_entry:
@@ -263,7 +288,7 @@ def verify_api_key_info():
     if not api_key:
         return jsonify({'error': 'api_key is required'}), 400
 
-    db = get_db()
+    db = get_central_db()
     try:
         app_entry = db.query(AuthorizedApp).filter_by(api_key=api_key).first()
         if not app_entry:
@@ -417,7 +442,7 @@ def upload_document():
     path = os.path.join(tenant_dir, unique)
     file.save(path)
 
-    db = get_db()
+    db = _get_tenant_db()
     try:
         doc = Document(
             tenant_id=_tenant_id(),
@@ -435,7 +460,7 @@ def upload_document():
     finally:
         db.close()
 
-    process_document_task.delay(doc_id, path, document_type)
+    process_document_task.delay(_tenant_db_name(), doc_id, path, document_type)
 
     return jsonify({'message': 'Document uploaded', 'document_id': doc_id, 'status': 'processing'}), 201
 
@@ -444,7 +469,7 @@ def upload_document():
 @app.route('/api/history', methods=['GET'])
 def get_history():
     """Returns combined history of all single and batch analyses, sorted by date."""
-    db = get_db()
+    db = _get_tenant_db()
     try:
         docs = db.query(Document).join(Analysis).filter(Document.tenant_id == _tenant_id()).all()
         batches = db.query(BatchAnalysis).filter(BatchAnalysis.tenant_id == _tenant_id()).all()
@@ -488,7 +513,7 @@ def get_history():
 
 @app.route('/api/documents', methods=['GET'])
 def list_documents():
-    db = get_db()
+    db = _get_tenant_db()
     try:
         docs = db.query(Document).filter(Document.tenant_id == _tenant_id()).order_by(Document.upload_date.desc()).all()
         return jsonify({'documents': [d.to_dict() for d in docs]})
@@ -498,7 +523,7 @@ def list_documents():
 
 @app.route('/api/documents/<int:doc_id>', methods=['GET'])
 def get_document(doc_id):
-    db = get_db()
+    db = _get_tenant_db()
     try:
         doc = db.query(Document).filter(Document.id == doc_id, Document.tenant_id == _tenant_id()).first()
         if not doc:
@@ -513,13 +538,13 @@ def get_document(doc_id):
 
 @app.route('/api/documents/<int:doc_id>', methods=['DELETE'])
 def delete_document(doc_id):
-    db = get_db()
+    db = _get_tenant_db()
     try:
         doc = db.query(Document).filter(Document.id == doc_id, Document.tenant_id == _tenant_id()).first()
         if not doc:
             return jsonify({'error': 'Document not found'}), 404
         try:
-            vector_store.remove_document(_tenant_id(), doc_id)
+            vector_store.remove_document(_tenant_db_name(), _tenant_id(), doc_id)
         except Exception as e:
             print(f"Warning: vector store cleanup for doc {doc_id}: {e}")
         if os.path.exists(doc.file_path):
@@ -533,7 +558,7 @@ def delete_document(doc_id):
 @app.route('/api/documents/<int:doc_id>/rename', methods=['PATCH'])
 def rename_document(doc_id):
     """Rename a document."""
-    db = get_db()
+    db = _get_tenant_db()
     try:
         doc = db.query(Document).filter(Document.id == doc_id, Document.tenant_id == _tenant_id()).first()
         if not doc:
@@ -551,7 +576,7 @@ def rename_document(doc_id):
 @app.route('/api/documents/<int:doc_id>/save', methods=['POST'])
 def save_document(doc_id):
     """Save document to knowledge base: mark as saved + chunk & embed into vector store."""
-    db = get_db()
+    db = _get_tenant_db()
     try:
         doc = db.query(Document).filter(Document.id == doc_id, Document.tenant_id == _tenant_id()).first()
         if not doc:
@@ -574,7 +599,7 @@ def save_document(doc_id):
             # Cache for future saves
             doc.markdown_text = text
 
-        chunk_count = vector_store.add_document(
+        chunk_count = vector_store.add_document(_tenant_db_name(), 
             _tenant_id(), doc_id, doc.original_filename, text,
             chunk_size=chunk_size, overlap=overlap,
         )
@@ -600,7 +625,7 @@ def save_document(doc_id):
 # ---- Analysis ----------------------------------------------------------------
 @app.route('/api/analysis/<int:doc_id>', methods=['GET'])
 def get_analysis(doc_id):
-    db = get_db()
+    db = _get_tenant_db()
     try:
         doc = db.query(Document).filter(Document.id == doc_id, Document.tenant_id == _tenant_id()).first()
         if not doc:
@@ -616,7 +641,7 @@ def get_analysis(doc_id):
 @app.route('/api/analysis/<int:doc_id>/check-frameworks', methods=['POST'])
 def check_frameworks(doc_id):
     """Run framework comparison for user-selected frameworks."""
-    db = get_db()
+    db = _get_tenant_db()
     try:
         doc = db.query(Document).filter(Document.id == doc_id, Document.tenant_id == _tenant_id()).first()
         if not doc:
@@ -638,7 +663,7 @@ def check_frameworks(doc_id):
 
         # Get document text (use cache if available)
         text = doc.markdown_text or extract_text(doc.file_path)
-        fw_uploaded = framework_store.get_uploaded_frameworks(_tenant_id())
+        fw_uploaded = framework_store.get_uploaded_frameworks(_tenant_db_name(), _tenant_id())
 
         llm = get_llm_client()
         mappings = dict(doc.analysis.framework_mappings or {})
@@ -646,7 +671,7 @@ def check_frameworks(doc_id):
         for key in selected:
             try:
                 if fw_uploaded.get(key, False):
-                    hits = framework_store.search_framework(_tenant_id(), key, text[:2000], top_k=8)
+                    hits = framework_store.search_framework(_tenant_db_name(), _tenant_id(), key, text[:2000], top_k=8)
                     if hits:
                         prompt = framework_comparison_prompt(text, doc.document_type, key, hits)
                     else:
@@ -705,7 +730,7 @@ def upload_batch():
     if document_type not in allowed_types:
         document_type = 'policy'
 
-    db = get_db()
+    db = _get_tenant_db()
     try:
         documents_info = []
         for file in files:
@@ -754,7 +779,7 @@ def upload_batch():
         batch_id = batch.id
 
         # Start background processing
-        process_batch_task.delay(batch_id, documents_info, document_type)
+        process_batch_task.delay(_tenant_db_name(), batch_id, documents_info, document_type)
 
         return jsonify({
             'message': f'{len(documents_info)} documents uploaded for batch analysis',
@@ -774,7 +799,7 @@ def upload_batch():
 @app.route('/api/batch-analysis/<int:batch_id>', methods=['GET'])
 def get_batch_analysis(batch_id):
     """Get batch analysis results including cross-doc synthesis."""
-    db = get_db()
+    db = _get_tenant_db()
     try:
         batch = db.query(BatchAnalysis).filter(BatchAnalysis.id == batch_id, BatchAnalysis.tenant_id == _tenant_id()).first()
         if not batch:
@@ -801,7 +826,7 @@ def get_batch_analysis(batch_id):
 @app.route('/api/batch-analysis/<int:batch_id>', methods=['DELETE'])
 def delete_batch_analysis(batch_id):
     """Delete a batch analysis and all its associated documents."""
-    db = get_db()
+    db = _get_tenant_db()
     try:
         batch = db.query(BatchAnalysis).filter(BatchAnalysis.id == batch_id, BatchAnalysis.tenant_id == _tenant_id()).first()
         if not batch:
@@ -811,7 +836,7 @@ def delete_batch_analysis(batch_id):
             doc = db.query(Document).filter(Document.id == doc_id).first()
             if doc:
                 try:
-                    vector_store.remove_document(_tenant_id(), doc_id)
+                    vector_store.remove_document(_tenant_db_name(), _tenant_id(), doc_id)
                 except Exception:
                     pass
                 if os.path.exists(doc.file_path):
@@ -831,7 +856,7 @@ def delete_batch_analysis(batch_id):
 @app.route('/api/batch-analysis/<int:batch_id>/save-all', methods=['POST'])
 def save_batch_documents(batch_id):
     """Save all documents in a batch to the knowledge base."""
-    db = get_db()
+    db = _get_tenant_db()
     try:
         batch = db.query(BatchAnalysis).filter(BatchAnalysis.id == batch_id, BatchAnalysis.tenant_id == _tenant_id()).first()
         if not batch:
@@ -851,7 +876,7 @@ def save_batch_documents(batch_id):
                 continue
             try:
                 text = doc.markdown_text or extract_text(doc.file_path)
-                chunk_count = vector_store.add_document(
+                chunk_count = vector_store.add_document(_tenant_db_name(), 
                     _tenant_id(), doc.id, doc.original_filename, text,
                     chunk_size=chunk_size, overlap=overlap,
                 )
@@ -879,7 +904,7 @@ def save_batch_documents(batch_id):
 @app.route('/api/trends', methods=['GET'])
 def get_trends():
     """Return historical scores for trend charts."""
-    db = get_db()
+    db = _get_tenant_db()
     try:
         analyses = (
             db.query(Analysis)
@@ -908,13 +933,14 @@ def get_trends():
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
     """Return application-wide statistics including lifetime token usage."""
-    db = get_db()
+    central_db = get_central_db()
+    tenant_db = _get_tenant_db()
     try:
-        setting = db.query(SystemSettings).filter(SystemSettings.key == 'lifetime_tokens').first()
+        setting = central_db.query(SystemSettings).filter(SystemSettings.key == 'lifetime_tokens').first()
         lifetime_tokens = int(setting.value) if setting else 0
         
         # Calculate total tokens used explicitly in chat
-        chat_tokens_query = db.query(func.sum(ChatHistory.tokens_used)).filter(ChatHistory.tenant_id == _tenant_id()).scalar()
+        chat_tokens_query = tenant_db.query(func.sum(ChatHistory.tokens_used)).filter(ChatHistory.tenant_id == _tenant_id()).scalar()
         total_chat_tokens = int(chat_tokens_query) if chat_tokens_query else 0
         
         return jsonify({
@@ -922,28 +948,33 @@ def get_stats():
             'total_chat_tokens': total_chat_tokens
         })
     finally:
-        db.close()
+        central_db.close()
+        tenant_db.close()
 
 @app.route('/api/stats/reset', methods=['POST'])
 def reset_tokens():
     """Reset lifetime and chat token counts to zero."""
-    db = get_db()
+    central_db = get_central_db()
+    tenant_db = _get_tenant_db()
     try:
         # Reset lifetime settings to 0
-        setting = db.query(SystemSettings).filter(SystemSettings.key == 'lifetime_tokens').first()
+        setting = central_db.query(SystemSettings).filter(SystemSettings.key == 'lifetime_tokens').first()
         if setting:
             setting.value = "0"
             
         # Reset all past chat history tokens to 0 to prevent sum rebuilding
-        db.query(ChatHistory).filter(ChatHistory.tenant_id == _tenant_id()).update({ChatHistory.tokens_used: 0})
+        tenant_db.query(ChatHistory).filter(ChatHistory.tenant_id == _tenant_id()).update({ChatHistory.tokens_used: 0})
         
-        db.commit()
+        central_db.commit()
+        tenant_db.commit()
         return jsonify({'status': 'success', 'message': 'Token counts reset to 0'})
     except Exception as e:
-        db.rollback()
+        central_db.rollback()
+        tenant_db.rollback()
         return jsonify({'error': str(e)}), 500
     finally:
-        db.close()
+        central_db.close()
+        tenant_db.close()
 
 
 # ---- Knowledge-Base Chat (Unified RAG) ---------------------------------------
@@ -973,7 +1004,7 @@ def chat_upload_file():
     file.save(temp_path)
 
     try:
-        result = chat_file_store.upload_file(temp_path, file.filename)
+        result = chat_file_store.upload_file(_tenant_db_name(), temp_path, file.filename)
         return jsonify(result)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
@@ -993,9 +1024,9 @@ def chat_save_file_to_kb():
     if not session_id:
         return jsonify({'error': 'session_id required'}), 400
 
-    db = get_db()
+    db = _get_tenant_db()
     try:
-        result = chat_file_store.save_to_kb(session_id, db, tenant_id=_tenant_id())
+        result = chat_file_store.save_to_kb(_tenant_db_name(), session_id, db, tenant_id=_tenant_id())
         return jsonify(result)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
@@ -1009,7 +1040,7 @@ def chat_clear_file():
     data = request.get_json(force=True) or {}
     session_id = data.get('session_id', '').strip()
     if session_id:
-        chat_file_store.clear_session(session_id)
+        chat_file_store.clear_session(_tenant_db_name(), session_id)
     return jsonify({'message': 'Cleared'})
 
 
@@ -1041,16 +1072,12 @@ def chat_fill_document():
         # Use the same LLM client as chat
         fill_llm = get_llm_client()
 
-        result = document_filler.fill_document(file_path, filename, fill_llm, tenant_id=_tenant_id())
+        result = document_filler.fill_document(file_path, filename, fill_llm, db_name=_tenant_db_name(), tenant_id=_tenant_id())
 
         used_tokens = fill_llm.total_input_tokens + fill_llm.total_output_tokens
 
         # Track token usage
-        db = get_db()
-        try:
-            _increment_lifetime_tokens(db, used_tokens)
-        finally:
-            db.close()
+        _increment_lifetime_tokens(used_tokens)
 
         return jsonify({
             'download_url': f'/api/chat/download/{result["output_filename"]}',
@@ -1103,111 +1130,111 @@ def chat():
         return process_batch_questions(target_filename, message)
 
     # ---- Normal Contextual RAG ----
-    with SessionLocal() as db:
-        try:
-            # Get history FIRST (Fix: Order by desc to get RECENT, then reverse)
-            history = (
-                db.query(ChatHistory)
-                .filter(ChatHistory.document_id.is_(None))
-                .order_by(ChatHistory.timestamp.desc())
-                .limit(10)
-                .all()
-            )
-            # Restore chronological order
-            history.reverse()
-            history_dicts = [h.to_dict() for h in history]
+    db = _get_tenant_db()
+    try:
+        # Get history FIRST (Fix: Order by desc to get RECENT, then reverse)
+        history = (
+            db.query(ChatHistory)
+            .filter(ChatHistory.document_id.is_(None))
+            .order_by(ChatHistory.timestamp.desc())
+            .limit(10)
+            .all()
+        )
+        # Restore chronological order
+        history.reverse()
+        history_dicts = [h.to_dict() for h in history]
 
-            # Initialize a new LLM client for this request to ensure token counts are thread-safe
-            chat_llm = get_llm_client()
+        # Initialize a new LLM client for this request to ensure token counts are thread-safe
+        chat_llm = get_llm_client()
 
-            # Contextualize query
-            search_query = message
-            if history_dicts:
-                print(f"Rewriting query with history ({len(history_dicts)} msgs)...")
-                rewrite_prompt = standalone_question_prompt(history_dicts, message)
-                rewritten = chat_llm.invoke(rewrite_prompt)
-                # Basic cleanup if LLM returns "Standalone Question: ..." prefix
-                if "Standalone Question:" in rewritten:
-                    rewritten = rewritten.split("Standalone Question:")[-1].strip()
-                search_query = rewritten
-                print(f"Original: {message} -> Rewritten: {search_query}")
+        # Contextualize query
+        search_query = message
+        if history_dicts:
+            print(f"Rewriting query with history ({len(history_dicts)} msgs)...")
+            rewrite_prompt = standalone_question_prompt(history_dicts, message)
+            rewritten = chat_llm.invoke(rewrite_prompt)
+            # Basic cleanup if LLM returns "Standalone Question: ..." prefix
+            if "Standalone Question:" in rewritten:
+                rewritten = rewritten.split("Standalone Question:")[-1].strip()
+            search_query = rewritten
+            print(f"Original: {message} -> Rewritten: {search_query}")
 
-            # ---- Dual-source RAG: uploaded file + KB ----
-            uploaded_file_context = None
-            if session_id:
-                # Get the full uploaded file text to include as context
-                file_session = chat_file_store.get_session(session_id)
-                if file_session:
-                    meta = chat_file_store._load_meta(session_id)
-                    if meta and meta.get('text'):
-                        # Truncate to ~8000 chars to fit in context window
-                        uploaded_file_context = meta['text'][:8000]
+        # ---- Dual-source RAG: uploaded file + KB ----
+        uploaded_file_context = None
+        if session_id:
+            # Get the full uploaded file text to include as context
+            file_session = chat_file_store.get_session(session_id)
+            if file_session:
+                meta = chat_file_store._load_meta(session_id)
+                if meta and meta.get('text'):
+                    # Truncate to ~8000 chars to fit in context window
+                    uploaded_file_context = meta['text'][:8000]
 
-            if session_id and uploaded_file_context:
-                # When a file is uploaded, search KB using the FILE CONTENT as queries
-                # (not the user message like "answer all questions"), so we find relevant KB chunks.
-                file_lines = [l.strip() for l in uploaded_file_context.split('\n') if l.strip() and len(l.strip()) > 10]
-                # Increase query cap to cover up to 50 questions
-                all_queries = [search_query] + file_lines[:50]
+        if session_id and uploaded_file_context:
+            # When a file is uploaded, search KB using the FILE CONTENT as queries
+            # (not the user message like "answer all questions"), so we find relevant KB chunks.
+            file_lines = [l.strip() for l in uploaded_file_context.split('\n') if l.strip() and len(l.strip()) > 10]
+            # Increase query cap to cover up to 50 questions
+            all_queries = [search_query] + file_lines[:50]
 
-                # Search KB for each query, get top 2, and deduplicate
-                seen_chunks = set()
-                hits = []
-                for q in all_queries:
-                    # If we already have enough context chunks, stop querying to save time
-                    if len(hits) >= 20:
-                        break
-                    
-                    q_hits = vector_store.search(_tenant_id(), q, top_k=2)
-                    for h in q_hits:
-                        key = (h.get('doc_id'), h.get('chunk_index'))
-                        if key not in seen_chunks and h.get('filename') and h['filename'] != 'unknown' and h.get('doc_id', -1) != -1:
-                            seen_chunks.add(key)
-                            hits.append(h)
-                            if len(hits) >= 20:  # Strict cap to prevent context window explosion
-                                break
-                print(f"📎 File-upload KB search: {len(all_queries)} queries → {len(hits)} unique KB chunks")
-            else:
-                # Normal KB search with user message
-                kb_hits = vector_store.search(_tenant_id(), search_query, top_k=8)
-                hits = [h for h in kb_hits if (
-                    h.get('filename') and h['filename'] != 'unknown' and h.get('doc_id', -1) != -1
-                )]
+            # Search KB for each query, get top 2, and deduplicate
+            seen_chunks = set()
+            hits = []
+            for q in all_queries:
+                # If we already have enough context chunks, stop querying to save time
+                if len(hits) >= 20:
+                    break
+                
+                q_hits = vector_store.search(_tenant_db_name(), _tenant_id(), q, top_k=2)
+                for h in q_hits:
+                    key = (h.get('doc_id'), h.get('chunk_index'))
+                    if key not in seen_chunks and h.get('filename') and h['filename'] != 'unknown' and h.get('doc_id', -1) != -1:
+                        seen_chunks.add(key)
+                        hits.append(h)
+                        if len(hits) >= 20:  # Strict cap to prevent context window explosion
+                            break
+            print(f"📎 File-upload KB search: {len(all_queries)} queries → {len(hits)} unique KB chunks")
+        else:
+            # Normal KB search with user message
+            kb_hits = vector_store.search(_tenant_db_name(), _tenant_id(), search_query, top_k=8)
+            hits = [h for h in kb_hits if (
+                h.get('filename') and h['filename'] != 'unknown' and h.get('doc_id', -1) != -1
+            )]
 
-            if not hits and not uploaded_file_context:
-                no_info_msg = 'I could not find relevant information.'
-                if not session_id:
-                    no_info_msg += ' Try uploading a document or saving documents to the Knowledge Base.'
-                return jsonify({
-                    'answer': no_info_msg,
-                    'citations': [],
-                    'has_uploaded_file': bool(session_id),
-                    'session_id': session_id,
-                })
+        if not hits and not uploaded_file_context:
+            no_info_msg = 'I could not find relevant information.'
+            if not session_id:
+                no_info_msg += ' Try uploading a document or saving documents to the Knowledge Base.'
+            return jsonify({
+                'answer': no_info_msg,
+                'citations': [],
+                'has_uploaded_file': bool(session_id),
+                'session_id': session_id,
+            })
 
-            # Save user message
-            user_msg = ChatHistory(tenant_id=_tenant_id(), document_id=None, role='user', message=message)
-            db.add(user_msg)
-            db.commit()
+        # Save user message
+        user_msg = ChatHistory(tenant_id=_tenant_id(), document_id=None, role='user', message=message)
+        db.add(user_msg)
+        db.commit()
 
-            # Build prompt with retrieved chunks + citation instructions
-            if uploaded_file_context:
-                # --- Dedicated file-upload prompt with strict citation rules ---
-                file_session = chat_file_store.get_session(session_id)
-                fname = file_session['filename'] if file_session else 'uploaded file'
+        # Build prompt with retrieved chunks + citation instructions
+        if uploaded_file_context:
+            # --- Dedicated file-upload prompt with strict citation rules ---
+            file_session = chat_file_store.get_session(session_id)
+            fname = file_session['filename'] if file_session else 'uploaded file'
 
-                # Build KB context with source labels
-                kb_context_parts = []
-                kb_source_names = set()
-                for i, chunk in enumerate(hits):
-                    src = chunk['filename']
-                    kb_source_names.add(src)
-                    kb_context_parts.append(f"[Chunk {i+1} | Source: {src}]\n{chunk['text']}")
-                kb_context_str = "\n\n".join(kb_context_parts) if kb_context_parts else "(No KB results found)"
+            # Build KB context with source labels
+            kb_context_parts = []
+            kb_source_names = set()
+            for i, chunk in enumerate(hits):
+                src = chunk['filename']
+                kb_source_names.add(src)
+                kb_context_parts.append(f"[Chunk {i+1} | Source: {src}]\n{chunk['text']}")
+            kb_context_str = "\n\n".join(kb_context_parts) if kb_context_parts else "(No KB results found)"
 
-                kb_sources_list = "\n".join(f"  - {s}" for s in sorted(kb_source_names)) if kb_source_names else "  (none)"
+            kb_sources_list = "\n".join(f"  - {s}" for s in sorted(kb_source_names)) if kb_source_names else "  (none)"
 
-                prompt = f"""You are a knowledge base assistant. The user uploaded a file and wants you to answer questions using the Knowledge Base documents.
+            prompt = f"""You are a knowledge base assistant. The user uploaded a file and wants you to answer questions using the Knowledge Base documents.
 
 KNOWLEDGE BASE DOCUMENTS (these are the ONLY valid source names for citations):
 {kb_sources_list}
@@ -1241,63 +1268,64 @@ Output your response STRICTLY as a JSON object with the following structure:
 }}
 
 Return ONLY the JSON object, with no markdown formatting or extra text."""
-            else:
-                prompt = knowledge_chat_prompt(hits, history_dicts, message)
-            raw_answer = chat_llm.invoke(prompt)
+        else:
+            prompt = knowledge_chat_prompt(hits, history_dicts, message)
+        raw_answer = chat_llm.invoke(prompt)
 
-            # --- Parse JSON response ---
-            import json
+        # --- Parse JSON response ---
+        import json
+        
+        answer_text = raw_answer
+        confidence_score = None
+        try:
+            # Clean up if enclosed in markdown
+            cleaned = raw_answer.strip()
+            if "```json" in cleaned:
+                cleaned = cleaned.split("```json")[1].split("```")[0].strip()
+            elif "```" in cleaned:
+                cleaned = cleaned.split("```")[1].split("```")[0].strip()
             
-            answer_text = raw_answer
-            confidence_score = None
-            try:
-                # Clean up if enclosed in markdown
-                cleaned = raw_answer.strip()
-                if "```json" in cleaned:
-                    cleaned = cleaned.split("```json")[1].split("```")[0].strip()
-                elif "```" in cleaned:
-                    cleaned = cleaned.split("```")[1].split("```")[0].strip()
-                
-                parsed = json.loads(cleaned)
-                if isinstance(parsed, dict) and "answer" in parsed:
-                    answer_text = parsed["answer"]
-                    confidence_score = parsed.get("confidence_score")
-            except Exception as e:
-                print(f"Failed to parse LLM JSON response: {e}")
-                # Fallback to returning raw text without confidence score
-                pass
-            
-            # Calculate total tokens used across the rewrite + final answer
-            used_tokens = chat_llm.total_input_tokens + chat_llm.total_output_tokens
-
-            # Save assistant message
-            assistant_msg = ChatHistory(tenant_id=_tenant_id(), document_id=None, role='assistant', message=answer_text, tokens_used=used_tokens)
-            db.add(assistant_msg)
-            db.commit()
-            
-            # Update global counter
-            _increment_lifetime_tokens(db, used_tokens)
-
-            # Extract unique source docs for citation metadata
-            cited_docs = {}
-            for h in hits:
-                if h.get('filename'):
-                    cited_docs[h['filename']] = True
-
-            return jsonify({
-                'answer': answer_text,
-                'citations': list(cited_docs.keys()),
-                'tokens_used': used_tokens,
-                'confidence_score': confidence_score,
-                'has_uploaded_file': bool(session_id),
-                'session_id': session_id,
-            })
-
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict) and "answer" in parsed:
+                answer_text = parsed["answer"]
+                confidence_score = parsed.get("confidence_score")
         except Exception as e:
-            print(f"Chat error: {e}")
-            print(f"Save to KB error: {e}")
-            import traceback; traceback.print_exc()
-            return jsonify({'error': str(e)}), 500
+            print(f"Failed to parse LLM JSON response: {e}")
+            # Fallback to returning raw text without confidence score
+            pass
+        
+        # Calculate total tokens used across the rewrite + final answer
+        used_tokens = chat_llm.total_input_tokens + chat_llm.total_output_tokens
+
+        # Save assistant message
+        assistant_msg = ChatHistory(tenant_id=_tenant_id(), document_id=None, role='assistant', message=answer_text, tokens_used=used_tokens)
+        db.add(assistant_msg)
+        db.commit()
+        
+        # Update global counter
+        _increment_lifetime_tokens(used_tokens)
+
+        # Extract unique source docs for citation metadata
+        cited_docs = {}
+        for h in hits:
+            if h.get('filename'):
+                cited_docs[h['filename']] = True
+
+        return jsonify({
+            'answer': answer_text,
+            'citations': list(cited_docs.keys()),
+            'tokens_used': used_tokens,
+            'confidence_score': confidence_score,
+            'has_uploaded_file': bool(session_id),
+            'session_id': session_id,
+        })
+
+    except Exception as e:
+        print(f"Chat error: {e}")
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        db.close()
 
 
 
@@ -1308,12 +1336,13 @@ def process_batch_questions(filename: str, user_message: str):
 
     # 1. Retrieve full text of the file
     print(f"Retrieving text for {filename}...")
-    full_text = vector_store.get_document_text(_tenant_id(), filename)
+    full_text = vector_store.get_document_text(_tenant_db_name(), _tenant_id(), filename)
         
     # helper to save history
     def save_and_return(answer_text, citations_list, used_tokens=0):
         # Save interaction to DB
-        with SessionLocal() as db:
+        db = _get_tenant_db()
+        try:
             # User message
             db.add(ChatHistory(
                 tenant_id=_tenant_id(),
@@ -1333,7 +1362,9 @@ def process_batch_questions(filename: str, user_message: str):
             
             # Update global counter
             if used_tokens > 0:
-                _increment_lifetime_tokens(db, used_tokens)
+                _increment_lifetime_tokens(used_tokens)
+        finally:
+            db.close()
             
         return jsonify({
             'answer': answer_text,
@@ -1388,7 +1419,7 @@ def process_batch_questions(filename: str, user_message: str):
     for i, q in enumerate(questions):
         print(f"Processing Q{i+1}: {q}")
         # Search: Increase top_k and EXCLUDE the source file to avoid self-referencing
-        hits = vector_store.search(_tenant_id(), q, top_k=10, filters={"filename_ne": filename})
+        hits = vector_store.search(_tenant_db_name(), _tenant_id(), q, top_k=10, filters={"filename_ne": filename})
         
         # Debug: Print sources to verify we are getting other files
         print(f"  -> Found {len(hits)} chunks. Sources: {[h['filename'] for h in hits]}")
@@ -1429,7 +1460,7 @@ def process_batch_questions(filename: str, user_message: str):
 @app.route('/api/chat/history', methods=['GET'])
 def chat_history():
     """Get global chat history."""
-    db = get_db()
+    db = _get_tenant_db()
     try:
         msgs = (
             db.query(ChatHistory)
@@ -1445,7 +1476,7 @@ def chat_history():
 @app.route('/api/chat/history', methods=['DELETE'])
 def clear_chat_history():
     """Clear global chat history."""
-    db = get_db()
+    db = _get_tenant_db()
     try:
         db.query(ChatHistory).filter(
             ChatHistory.document_id.is_(None),
@@ -1460,7 +1491,7 @@ def clear_chat_history():
 @app.route('/api/kb/stats', methods=['GET'])
 def kb_stats():
     """Return knowledge base statistics."""
-    stats = vector_store.get_stats(_tenant_id())
+    stats = vector_store.get_stats(_tenant_db_name(), _tenant_id())
     return jsonify(stats)
 
 
@@ -1495,10 +1526,10 @@ if _startup_state.get("status") == "running":
     _set_reindex_state(status="idle", message="Reset after restart", current_doc="")
 
 
-def _reindex_worker(worker_tenant_id: int):
+def _reindex_worker(worker_tenant_id: int, worker_db_name: str):
     """Background worker: re-extract and re-index all saved documents for a tenant."""
     _reindex_cancel.clear()
-    db = get_db()
+    db = get_tenant_session(worker_db_name)
     try:
         docs = db.query(Document).filter(
             Document.is_saved == True,
@@ -1526,7 +1557,7 @@ def _reindex_worker(worker_tenant_id: int):
 
             try:
                 text = doc.markdown_text or extract_text(doc.file_path)
-                vector_store.add_document(worker_tenant_id, doc.id, doc.original_filename, text)
+                vector_store.add_document(worker_db_name, worker_tenant_id, doc.id, doc.original_filename, text)
             except Exception as e:
                 print(f"   ⚠️  Failed to reindex doc {doc.id}: {e}")
 
@@ -1557,7 +1588,8 @@ def kb_reindex():
 
     _set_reindex_state(status="running", current=0, total=0, current_doc="", message="Starting reindex…")
     tid = _tenant_id()
-    t = threading.Thread(target=_reindex_worker, args=(tid,), daemon=True)
+    db_name = _tenant_db_name()
+    t = threading.Thread(target=_reindex_worker, args=(tid, db_name), daemon=True)
     t.start()
     return jsonify({"message": "Reindex started"}), 202
 
@@ -1578,7 +1610,7 @@ os.makedirs(FRAMEWORK_UPLOAD_DIR, exist_ok=True)
 @app.route('/api/frameworks', methods=['GET'])
 def list_frameworks():
     """List all uploaded framework standard documents, grouped by key."""
-    db = get_db()
+    db = _get_tenant_db()
     try:
         standards = db.query(FrameworkStandard).filter(
             FrameworkStandard.tenant_id == _tenant_id()
@@ -1596,7 +1628,7 @@ def list_frameworks():
 @app.route('/api/frameworks/status', methods=['GET'])
 def frameworks_status():
     """Quick check: which frameworks have at least one uploaded standard."""
-    return jsonify(framework_store.get_uploaded_frameworks(_tenant_id()))
+    return jsonify(framework_store.get_uploaded_frameworks(_tenant_db_name(), _tenant_id()))
 
 
 @app.route('/api/frameworks/upload', methods=['POST'])
@@ -1625,12 +1657,12 @@ def upload_framework():
     # Extract text and index into vector store
     try:
         text = extract_text(file_path)
-        chunk_count = framework_store.add_framework(_tenant_id(), fw_key, version, filename, text)
+        chunk_count = framework_store.add_framework(_tenant_db_name(), _tenant_id(), fw_key, version, filename, text)
     except Exception as e:
         return jsonify({'error': f'Failed to process file: {e}'}), 500
 
     # Save to DB
-    db = get_db()
+    db = _get_tenant_db()
     try:
         record = FrameworkStandard(
             tenant_id=_tenant_id(),
@@ -1650,7 +1682,7 @@ def upload_framework():
 @app.route('/api/frameworks/<int:fw_id>', methods=['DELETE'])
 def delete_framework(fw_id):
     """Delete a specific framework version."""
-    db = get_db()
+    db = _get_tenant_db()
     try:
         record = db.query(FrameworkStandard).filter(
             FrameworkStandard.id == fw_id,
@@ -1660,7 +1692,7 @@ def delete_framework(fw_id):
             return jsonify({'error': 'Framework not found'}), 404
 
         # Remove from vector store
-        framework_store.remove_framework(_tenant_id(), record.framework_key, record.version, record.filename)
+        framework_store.remove_framework(_tenant_db_name(), _tenant_id(), record.framework_key, record.version, record.filename)
 
         # Remove file
         try:
@@ -1685,7 +1717,7 @@ def admin_list_tenants():
     err = _require_admin()
     if err:
         return err
-    db = get_db()
+    db = get_central_db()
     try:
         tenants = db.query(Tenant).order_by(Tenant.created_at.desc()).all()
         return jsonify({'tenants': [t.to_dict() for t in tenants]})
@@ -1705,7 +1737,7 @@ def admin_create_tenant():
     if not name or not slug:
         return jsonify({'error': 'name and slug are required'}), 400
 
-    db = get_db()
+    db = get_central_db()
     try:
         existing = db.query(Tenant).filter_by(slug=slug).first()
         if existing:
@@ -1714,6 +1746,10 @@ def admin_create_tenant():
         tenant = Tenant(name=name, slug=slug, is_active=True)
         db.add(tenant)
         db.flush()
+
+        # Create a dedicated database for this tenant
+        tenant_db_name = create_tenant_database(slug)
+        tenant.db_name = tenant_db_name
 
         # Auto-create a first API key for this tenant
         first_key = f"sk-{uuid.uuid4()}"
@@ -1741,7 +1777,7 @@ def admin_update_tenant(tenant_id):
     err = _require_admin()
     if err:
         return err
-    db = get_db()
+    db = get_central_db()
     try:
         tenant = db.query(Tenant).filter_by(id=tenant_id).first()
         if not tenant:
@@ -1763,7 +1799,7 @@ def admin_list_tenant_keys(tenant_id):
     err = _require_admin()
     if err:
         return err
-    db = get_db()
+    db = get_central_db()
     try:
         apps = db.query(AuthorizedApp).filter(
             AuthorizedApp.tenant_id == tenant_id
@@ -1779,7 +1815,7 @@ def admin_create_tenant_key(tenant_id):
     err = _require_admin()
     if err:
         return err
-    db = get_db()
+    db = get_central_db()
     try:
         tenant = db.query(Tenant).filter_by(id=tenant_id).first()
         if not tenant:
@@ -1809,7 +1845,7 @@ def admin_revoke_tenant_key(tenant_id, key_id):
     err = _require_admin()
     if err:
         return err
-    db = get_db()
+    db = get_central_db()
     try:
         app_entry = db.query(AuthorizedApp).filter(
             AuthorizedApp.id == key_id, AuthorizedApp.tenant_id == tenant_id

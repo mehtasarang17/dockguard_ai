@@ -1,7 +1,8 @@
 """
 Vector Store — pgvector-based knowledge base for semantic document search.
 
-Per-tenant isolation via SQL WHERE tenant_id = ?.
+Per-tenant isolation via dedicated tenant databases.
+The db_name parameter tells the store which tenant database to connect to.
 
 When a user clicks "Save to Knowledge Base", the document text is:
 1. Split into overlapping chunks (markdown-aware)
@@ -13,7 +14,8 @@ cosine distance (vector <=> operator) and return the most relevant
 chunks along with source metadata for citations.
 """
 
-from models import SessionLocal, KBChunk
+from models import KBChunk
+from tenant_db import get_tenant_session
 from embedding import embed_texts, embed_query
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from sqlalchemy import text as sa_text
@@ -74,13 +76,13 @@ def _chunk_text(text: str, chunk_size: int = None, overlap: int = None) -> list[
 
 # ---- Public API --------------------------------------------------------------
 
-def add_document(tenant_id: int, doc_id: int, filename: str, text: str,
+def add_document(db_name: str, tenant_id: int, doc_id: int, filename: str, text: str,
                  chunk_size: int = None, overlap: int = None) -> int:
     """Chunk, embed, and store a document in the tenant's KB. Returns chunk count."""
-    db = SessionLocal()
+    db = get_tenant_session(db_name)
     try:
         # Remove any existing chunks for this doc (re-save scenario)
-        remove_document(tenant_id, doc_id)
+        remove_document(db_name, tenant_id, doc_id)
 
         chunks = _chunk_text(text, chunk_size=chunk_size, overlap=overlap)
         if not chunks:
@@ -108,9 +110,9 @@ def add_document(tenant_id: int, doc_id: int, filename: str, text: str,
         db.close()
 
 
-def remove_document(tenant_id: int, doc_id: int):
+def remove_document(db_name: str, tenant_id: int, doc_id: int):
     """Remove all chunks for a given document from the tenant's KB."""
-    db = SessionLocal()
+    db = get_tenant_session(db_name)
     try:
         deleted = db.query(KBChunk).filter(
             KBChunk.tenant_id == tenant_id,
@@ -126,13 +128,13 @@ def remove_document(tenant_id: int, doc_id: int):
         db.close()
 
 
-def search(tenant_id: int, query: str, top_k: int = 6, filters: dict = None) -> list[dict]:
+def search(db_name: str, tenant_id: int, query: str, top_k: int = 6, filters: dict = None) -> list[dict]:
     """
     Search the tenant's knowledge base for chunks relevant to the query.
     filters: dict, e.g. {"filename_ne": "Book5.xlsx"} -> excludes that file.
     Returns list of dicts with keys: text, filename, doc_id, chunk_index, distance.
     """
-    db = SessionLocal()
+    db = get_tenant_session(db_name)
     try:
         # Check if any chunks exist
         count = db.query(KBChunk).filter(KBChunk.tenant_id == tenant_id).count()
@@ -173,9 +175,9 @@ def search(tenant_id: int, query: str, top_k: int = 6, filters: dict = None) -> 
         db.close()
 
 
-def get_stats(tenant_id: int) -> dict:
+def get_stats(db_name: str, tenant_id: int) -> dict:
     """Return knowledge base statistics for a tenant."""
-    db = SessionLocal()
+    db = get_tenant_session(db_name)
     try:
         total_chunks = db.query(KBChunk).filter(KBChunk.tenant_id == tenant_id).count()
 
@@ -206,9 +208,9 @@ def get_stats(tenant_id: int) -> dict:
         db.close()
 
 
-def get_document_text(tenant_id: int, filename: str) -> str:
+def get_document_text(db_name: str, tenant_id: int, filename: str) -> str:
     """Retrieve full text of a document by filename from the tenant's KB."""
-    db = SessionLocal()
+    db = get_tenant_session(db_name)
     try:
         chunks = db.query(KBChunk).filter(
             KBChunk.tenant_id == tenant_id,
