@@ -43,5 +43,8 @@ class Config:
     # Master key for auto-provisioning tenants (used by SaaS backend)
     PROVISIONING_MASTER_KEY = os.environ.get('PROVISIONING_MASTER_KEY', 'CHANGE-ME-set-PROVISIONING_MASTER_KEY-in-env')
 
+    # Default Admin API Key enforced on startup
+    ADMIN_API_KEY = os.environ.get('ADMIN_API_KEY', 'sk-change-me-in-production')
+
     # Celery / Redis
     CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://doc-analyzer-redis:6379/0')

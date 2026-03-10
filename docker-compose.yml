@@ -44,7 +44,8 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-mistral:7b}
       PROVISIONING_MASTER_KEY: ${PROVISIONING_MASTER_KEY:-CHANGE-ME-set-PROVISIONING_MASTER_KEY-in-env}
-      CELERY_BROKER_URL: redis://doc-analyzer-redis:6379/0
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-sk-change-me-in-production}
+      CELERY_BROKER_URL: redis://doc-analyzer-redis:6379/1
     ports:
       - "5002:5000" # Dev only — remove in production
     healthcheck:

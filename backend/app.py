@@ -44,24 +44,39 @@ def init_default_app():
                 db.flush()  # get tenant.id before committing
                 print(f"🏢 Created default tenant (id={tenant.id})")
 
-            # Ensure at least one admin API key exists
-            count = db.query(AuthorizedApp).count()
-            if count == 0:
-                new_key = f"sk-{uuid.uuid4()}"
+            # Enforce the Admin API Key from the environment
+            expected_admin_key = Config.ADMIN_API_KEY
+            
+            # Find the existing default admin app (if any)
+            admin_app = db.query(AuthorizedApp).filter_by(
+                tenant_id=tenant.id, 
+                name='Default Admin'
+            ).first()
+
+            if not admin_app:
+                # If there's NO 'Default Admin' app, create it with the strict environment key
                 app_entry = AuthorizedApp(
                     tenant_id=tenant.id,
                     name='Default Admin',
-                    api_key=new_key,
+                    api_key=expected_admin_key,
                     is_active=True,
                     is_admin=True,
                 )
                 db.add(app_entry)
-                print(f"🔑 Created default admin app with key: {new_key}")
+                print(f"🔑 Created default admin app with key from .env")
             else:
-                # Migrate: attach existing keys to the default tenant if they have no tenant
-                db.query(AuthorizedApp).filter(AuthorizedApp.tenant_id == None).update(
-                    {'tenant_id': tenant.id, 'is_admin': True}
-                )
+                # If it already exists, ENFORCE that the key matches the current .env variable
+                # This automatically rotates the key if the .env file is changed.
+                if admin_app.api_key != expected_admin_key:
+                    admin_app.api_key = expected_admin_key
+                    admin_app.is_active = True
+                    admin_app.is_admin = True
+                    print(f"🔄 Rotated default admin key to match .env Configuration")
+            
+            # Migrate: attach existing stray keys to the default tenant
+            db.query(AuthorizedApp).filter(AuthorizedApp.tenant_id == None).update(
+                {'tenant_id': tenant.id}
+            )
             db.commit()
     except Exception as e:
         print(f"Error initializing default app: {e}")
