@@ -132,7 +132,7 @@ services:
       ANONYMIZED_TELEMETRY: 'False'
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-mistral:7b}
-      CELERY_BROKER_URL: redis://doc-analyzer-redis:6379/0
+      CELERY_BROKER_URL: redis://doc-analyzer-redis:6379/1
     volumes:
       - doc_analyzer_v2_uploads:/app/uploads
       - doc_analyzer_v2_model_cache:/root/.cache
