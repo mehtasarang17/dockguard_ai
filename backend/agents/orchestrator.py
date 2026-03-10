@@ -622,14 +622,8 @@ class Orchestrator:
             if not chunk_texts:
                 return {"resolved_gaps": [], "corpus_gaps": [], "contradictions": [], "total_tokens": 0}
 
-            # Batch embed all chunks in small chunks to prevent OOM on 4GB Azure VMs
-            chunk_embeddings = []
-            batch_size = 8
-            for i in range(0, len(chunk_texts), batch_size):
-                batch_texts = chunk_texts[i:i + batch_size]
-                batch_embeddings = embed_texts(batch_texts)
-                chunk_embeddings.extend(batch_embeddings)
-            
+            # Batch embed all chunks
+            chunk_embeddings = embed_texts(chunk_texts)
             chunk_emb_array = np.array(chunk_embeddings)
 
             # Build summaries for the gap prompt
