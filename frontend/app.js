@@ -2886,12 +2886,14 @@ async function confirmProvider() {
     });
 })();
 
-// Update provider badge when settings opens
-const _origOpenSettings = typeof openSettings === 'function' ? openSettings : null;
-if (_origOpenSettings) {
-    window._openSettingsOrig = _origOpenSettings;
+// Define openSettings if it doesn't exist yet
+function openSettings() {
+    const modal = document.getElementById('settingsModal');
+    if (modal) {
+        modal.style.display = 'flex';
+        loadTenants();
+    }
 }
-
 
 function updateProviderBadge() {
     const el = document.getElementById('settingsCurrentProvider');
@@ -2902,9 +2904,9 @@ function updateProviderBadge() {
 }
 
 // Hook into settings open
-const origOpenFn = openSettings;
+const _origOpenSettings = openSettings;
 openSettings = function (e) {
-    origOpenFn(e);
+    _origOpenSettings(e);
     updateProviderBadge();
 };
 
