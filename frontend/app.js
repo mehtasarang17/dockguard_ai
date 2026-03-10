@@ -491,7 +491,8 @@ async function uploadBatch(files, docType) {
             } catch (_) { }
         }, 5000);
     } catch (e) {
-        alert('Batch upload error: ' + e.message);
+        console.error('Batch upload error caught:', e);
+        alert('Batch upload error: ' + e.message + '\nCheck console for details.');
         resetUpload();
     }
 }
