@@ -21,21 +21,20 @@ SWAGGER_PREFIXES = ('/apispec.json',)
 _default_tenant_db_name = None
 
 
-def _resolve_default_db_name():
-    """Look up the default tenant's db_name (cached for the process lifetime)."""
+def _resolve_default_tenant():
+    """Look up the first active tenant (cached for the process lifetime)."""
     global _default_tenant_db_name
-    if _default_tenant_db_name is not None:
-        return _default_tenant_db_name
 
     db = get_central_db()
     try:
-        tenant = db.query(Tenant).filter_by(id=1).first()
+        # Dynamically find the first active tenant, NOT hardcoded id=1
+        tenant = db.query(Tenant).filter_by(is_active=True).order_by(Tenant.id).first()
         if tenant and tenant.db_name:
             _default_tenant_db_name = tenant.db_name
-        else:
-            # Fallback: use the central database name
-            _default_tenant_db_name = Config.DATABASE_URL.rsplit('/', 1)[1]
-        return _default_tenant_db_name
+            return tenant
+        # Fallback: use the central database name
+        _default_tenant_db_name = Config.DATABASE_URL.rsplit('/', 1)[1]
+        return None
     finally:
         db.close()
 
@@ -115,10 +114,11 @@ def register_middleware(app):
         # Only reached when NO explicit auth headers are present (i.e. the main browser UI).
         internal_token = request.headers.get('X-Internal-Token', '')
         if internal_token and internal_token == Config.INTERNAL_TOKEN:
-            g.tenant_id = 1
+            default_tenant = _resolve_default_tenant()
+            g.tenant_id = default_tenant.id if default_tenant else 1
             g.is_admin = True
             g._internal_token_auth = True
-            g.tenant_db_name = _resolve_default_db_name()
+            g.tenant_db_name = default_tenant.db_name if default_tenant else Config.DATABASE_URL.rsplit('/', 1)[1]
             return None
 
         return jsonify({
