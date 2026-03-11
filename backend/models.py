@@ -325,7 +325,7 @@ class KBChunk(TenantBase):
     filename = Column(String(255))
     chunk_index = Column(Integer, default=0)
     content = Column(Text, nullable=False)
-    embedding = Column(Vector(384))  # all-MiniLM-L6-v2 = 384 dims
+    embedding = Column(Vector(768))  # all-mpnet-base-v2 = 768 dims
 
     __table_args__ = (
         Index('ix_kb_chunks_tenant_doc', 'tenant_id', 'doc_id'),
@@ -343,7 +343,7 @@ class FrameworkChunk(TenantBase):
     filename = Column(String(255))
     chunk_index = Column(Integer, default=0)
     content = Column(Text, nullable=False)
-    embedding = Column(Vector(384))
+    embedding = Column(Vector(768))
 
     __table_args__ = (
         Index('ix_fw_chunks_tenant_key', 'tenant_id', 'framework_key'),
@@ -359,7 +359,7 @@ class ChatFileChunk(TenantBase):
     filename = Column(String(255))
     chunk_index = Column(Integer, default=0)
     content = Column(Text, nullable=False)
-    embedding = Column(Vector(384))
+    embedding = Column(Vector(768))
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

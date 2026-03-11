@@ -6,7 +6,7 @@ The db_name parameter tells the store which tenant database to connect to.
 
 When a user clicks "Save to Knowledge Base", the document text is:
 1. Split into overlapping chunks (markdown-aware)
-2. Embedded via sentence-transformers (all-MiniLM-L6-v2, 384 dims)
+2. Embedded via sentence-transformers (all-mpnet-base-v2, 768 dims)
 3. Inserted into the kb_chunks table with pgvector
 
 Chat queries search across ALL saved documents for that tenant using
