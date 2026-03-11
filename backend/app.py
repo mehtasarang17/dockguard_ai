@@ -105,12 +105,40 @@ register_middleware(app)
 
 def _tenant_id() -> int:
     """Return the tenant_id for the current request."""
-    return getattr(g, 'tenant_id', 1)
+    tid = getattr(g, 'tenant_id', None)
+    if tid is not None:
+        return tid
+    # Fallback: look up the first active tenant dynamically (avoids hardcoded ID=1)
+    from db import get_central_session
+    from models import Tenant
+    try:
+        central_db = get_central_session()
+        tenant = central_db.query(Tenant).filter_by(is_active=True).order_by(Tenant.id).first()
+        central_db.close()
+        if tenant:
+            return tenant.id
+    except Exception:
+        pass
+    return 1  # Last resort fallback
 
 
 def _tenant_db_name() -> str:
     """Return the tenant's database name for the current request."""
-    return getattr(g, 'tenant_db_name', Config.DATABASE_URL.rsplit('/', 1)[1])
+    db_name = getattr(g, 'tenant_db_name', None)
+    if db_name is not None:
+        return db_name
+    # Fallback: look up the first active tenant dynamically
+    from db import get_central_session
+    from models import Tenant
+    try:
+        central_db = get_central_session()
+        tenant = central_db.query(Tenant).filter_by(is_active=True).order_by(Tenant.id).first()
+        central_db.close()
+        if tenant:
+            return tenant.db_name
+    except Exception:
+        pass
+    return Config.DATABASE_URL.rsplit('/', 1)[1]
 
 
 def _get_tenant_db():
