@@ -14,12 +14,25 @@ tenant database (database-per-tenant isolation).
 import time
 import traceback
 
-from models import get_central_db, Document, Analysis, BatchAnalysis, SystemSettings
+from models import get_central_db, Document, Analysis, BatchAnalysis, SystemSettings, Tenant
 from tenant_db import get_tenant_session
 from extractor import extract_text
 from agents.orchestrator import Orchestrator
 import framework_store
 from sqlalchemy.orm.attributes import flag_modified
+
+
+def _get_tenant_id_from_db_name(db_name: str) -> int:
+    """Look up the tenant ID from a database name."""
+    try:
+        central_db = get_central_db()
+        tenant = central_db.query(Tenant).filter(Tenant.db_name == db_name).first()
+        central_db.close()
+        if tenant:
+            return tenant.id
+    except Exception as e:
+        print(f"⚠️  Failed to look up tenant from db_name '{db_name}': {e}")
+    return None
 
 
 def _increment_lifetime_tokens(token_count: int):
@@ -47,6 +60,7 @@ def _increment_lifetime_tokens(token_count: int):
 def process_document(db_name: str, document_id: int, file_path: str, document_type: str):
     """Analyse a single document end-to-end (text extraction → pipeline → DB save)."""
     db = get_tenant_session(db_name)
+    tenant_id = _get_tenant_id_from_db_name(db_name)
     try:
         doc = db.query(Document).filter(Document.id == document_id).first()
         doc.status = 'processing'
@@ -58,6 +72,16 @@ def process_document(db_name: str, document_id: int, file_path: str, document_ty
         doc.markdown_text = text
         db.commit()
 
+        # Validate LLM credentials before doing any work
+        from agents.llm_factory import get_llm_client
+        try:
+            get_llm_client(tenant_id=tenant_id)
+        except RuntimeError as e:
+            print(f"❌ LLM not configured for tenant {tenant_id}: {e}")
+            doc.status = 'failed'
+            db.commit()
+            return
+
         start = time.time()
 
         # Skip framework analysis during initial processing.
@@ -66,7 +90,8 @@ def process_document(db_name: str, document_id: int, file_path: str, document_ty
 
         orchestrator = Orchestrator()
         result = orchestrator.run(document_id, text, document_type,
-                                  uploaded_frameworks=skip_all)
+                                  uploaded_frameworks=skip_all,
+                                  tenant_id=tenant_id)
         elapsed = time.time() - start
 
         scoring = result.get('scoring_details', {})
@@ -118,6 +143,7 @@ def process_document(db_name: str, document_id: int, file_path: str, document_ty
 def process_batch(db_name: str, batch_id: int, documents_info: list, document_type: str):
     """Analyse multiple documents and run cross-doc synthesis."""
     db = get_tenant_session(db_name)
+    tenant_id = _get_tenant_id_from_db_name(db_name)
     try:
         batch = db.query(BatchAnalysis).filter(BatchAnalysis.id == batch_id).first()
         if not batch:
@@ -158,9 +184,25 @@ def process_batch(db_name: str, batch_id: int, documents_info: list, document_ty
             db.commit()
             return
 
+        # Validate LLM credentials before doing any work
+        from agents.llm_factory import get_llm_client
+        try:
+            get_llm_client(tenant_id=tenant_id)
+        except RuntimeError as e:
+            print(f"❌ LLM not configured for tenant {tenant_id}: {e}")
+            for d in documents:
+                doc = db.query(Document).filter(Document.id == d['id']).first()
+                if doc:
+                    doc.status = 'failed'
+            batch.status = 'failed'
+            batch.synthesis = {'error': str(e)}
+            flag_modified(batch, 'synthesis')
+            db.commit()
+            return
+
         # Run batch analysis with a fresh Orchestrator
         batch_orchestrator = Orchestrator()
-        result = batch_orchestrator.run_batch(documents, document_type)
+        result = batch_orchestrator.run_batch(documents, document_type, tenant_id=tenant_id)
 
         # Save individual analyses
         for ir in result.get('individual_results', []):

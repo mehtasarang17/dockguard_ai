@@ -90,11 +90,19 @@ class Orchestrator:
         self.graph = self._build_graph()
 
     def run(self, document_id: int, text: str, doc_type: str,
-            uploaded_frameworks: dict = None) -> dict:
-        """Run the full analysis pipeline for a single document."""
+            uploaded_frameworks: dict = None, tenant_id: int = None) -> dict:
+        """Run the full analysis pipeline for a single document.
+
+        Args:
+            document_id: The document ID being analyzed
+            text: The document text content
+            doc_type: Document type (policy, contract, procedure)
+            uploaded_frameworks: Which framework standards are uploaded
+            tenant_id: Optional tenant ID for per-tenant LLM config
+        """
         start = time.time()
         tracker = get_token_tracker()
-        llm = get_llm_client()  # Pooled singleton
+        llm = get_llm_client(tenant_id=tenant_id)  # Tenant-aware or global singleton
         if uploaded_frameworks is None:
             uploaded_frameworks = {k: False for k in framework_store.FRAMEWORK_KEYS}
 
@@ -494,7 +502,7 @@ class Orchestrator:
     # ---- Multi-document batch analysis (PARALLEL) ----------------------------
 
     def run_batch(self, documents: list[dict], doc_type: str,
-                  uploaded_frameworks: dict = None) -> dict:
+                  uploaded_frameworks: dict = None, tenant_id: int = None) -> dict:
         """Run analysis on multiple documents with cross-document synthesis.
 
         Documents are analyzed IN PARALLEL (up to MAX_PARALLEL_BATCH_DOCS at a time).
@@ -503,11 +511,13 @@ class Orchestrator:
             documents: List of {"id": int, "filename": str, "text": str}
             doc_type: Document type (policy, contract, procedure)
             uploaded_frameworks: Which framework standards are uploaded
+            tenant_id: Optional tenant ID for per-tenant LLM config
 
         Returns:
             Combined result with individual + cross-doc analysis.
         """
         start = time.time()
+        self._batch_tenant_id = tenant_id  # Store for use in worker threads
         if uploaded_frameworks is None:
             uploaded_frameworks = {k: False for k in framework_store.FRAMEWORK_KEYS}
 
@@ -528,7 +538,8 @@ class Orchestrator:
                 # LangGraph compiled graph iteration state corruption.
                 doc_orchestrator = Orchestrator()
                 result = doc_orchestrator.run(doc["id"], doc["text"], doc_type,
-                                              uploaded_frameworks=uploaded_frameworks)
+                                              uploaded_frameworks=uploaded_frameworks,
+                                              tenant_id=tenant_id)
                 return {
                     "document_id": doc["id"],
                     "filename": doc["filename"],
@@ -572,10 +583,10 @@ class Orchestrator:
         print(f"🔗 CROSS-DOCUMENT ANALYSIS")
         print(f"{'='*60}\n")
 
-        cross_doc_gaps = self._cross_doc_gap_detection(individual_results)
+        cross_doc_gaps = self._cross_doc_gap_detection(individual_results, tenant_id=tenant_id)
 
         # Phase 3: Unified synthesis
-        synthesis = self._multi_doc_synthesis(individual_results)
+        synthesis = self._multi_doc_synthesis(individual_results, tenant_id=tenant_id)
 
         # Sum all tokens
         total_batch_tokens = 0
@@ -595,7 +606,7 @@ class Orchestrator:
             "total_tokens": total_batch_tokens,
         }
 
-    def _cross_doc_gap_detection(self, individual_results: list) -> dict:
+    def _cross_doc_gap_detection(self, individual_results: list, tenant_id: int = None) -> dict:
         """Use Vector Cross-Reference to detect inter-document gaps."""
         import numpy as np
         from embedding import embed_texts, embed_query
@@ -671,7 +682,7 @@ class Orchestrator:
                     unique_chunks.append(c)
 
             # Ask LLM to resolve cross-document gaps
-            local_llm = get_llm_client()
+            local_llm = get_llm_client(tenant_id=tenant_id)
             local_tracker = get_token_tracker()
             prompt = multi_doc_gap_prompt(doc_summaries, unique_chunks[:20])
             raw = local_llm.invoke(prompt, max_tokens=6144, tracker=local_tracker)
@@ -689,7 +700,7 @@ class Orchestrator:
             traceback.print_exc()
             return {"resolved_gaps": [], "corpus_gaps": [], "contradictions": [], "total_tokens": 0, "error": str(e)}
 
-    def _multi_doc_synthesis(self, individual_results: list) -> dict:
+    def _multi_doc_synthesis(self, individual_results: list, tenant_id: int = None) -> dict:
         """Synthesize all document results into a unified assessment."""
         print("🧠 Multi-document synthesis...")
         try:
@@ -709,7 +720,7 @@ class Orchestrator:
                     "top_risks": [r.get("risk", "") for r in result.get("risk_findings", [])[:3]],
                 })
 
-            local_llm = get_llm_client()
+            local_llm = get_llm_client(tenant_id=tenant_id)
             local_tracker = get_token_tracker()
             prompt = multi_doc_synthesis_prompt(doc_results)
             raw = local_llm.invoke(prompt, max_tokens=4096, tracker=local_tracker)

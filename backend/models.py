@@ -1,6 +1,6 @@
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text, Float,
-    DateTime, Boolean, ForeignKey, JSON, text, Index
+    DateTime, Boolean, ForeignKey, JSON, text, Index, UniqueConstraint
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
@@ -39,8 +39,19 @@ class Tenant(CentralBase):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # Per-tenant LLM Configuration (encrypted bearer token)
+    llm_aws_bearer_token = Column(Text, nullable=True)        # Encrypted
+    llm_aws_region = Column(String(50), nullable=True)        # e.g., 'us-east-1'
+    llm_bedrock_model_id = Column(String(100), nullable=True)
+    llm_config_updated_at = Column(DateTime, nullable=True)
+
     # Relationships (central DB only)
     authorized_apps = relationship("AuthorizedApp", back_populates="tenant", cascade="all, delete-orphan")
+
+    @property
+    def has_llm_config(self):
+        """Check if tenant has LLM configuration set."""
+        return bool(self.llm_aws_bearer_token and self.llm_aws_region)
 
     def to_dict(self):
         return {
@@ -50,6 +61,7 @@ class Tenant(CentralBase):
             'db_name': self.db_name,
             'is_active': self.is_active,
             'created_at': self.created_at.isoformat() if self.created_at else None,
+            'has_llm_config': self.has_llm_config,
         }
 
 
@@ -276,7 +288,7 @@ class BatchAnalysis(TenantBase):
 
     id = Column(Integer, primary_key=True)
     tenant_id = Column(Integer, nullable=False, default=1)   # kept for traceability
-    document_ids = Column(JSON, nullable=False)         # list of document IDs in this batch
+    # document_ids (JSON) removed — replaced by BatchDocument pivot table
     document_type = Column(String(50), nullable=False)
     status = Column(String(50), default='processing')   # processing, completed, failed
 
@@ -295,10 +307,18 @@ class BatchAnalysis(TenantBase):
     created_at = Column(DateTime, default=datetime.utcnow)
     processing_time = Column(Float)
 
+    # Pivot relationship
+    batch_documents = relationship("BatchDocument", cascade="all, delete-orphan", lazy="joined")
+
+    @property
+    def document_ids(self):
+        """Return ordered list of document IDs via the pivot table."""
+        return [bd.document_id for bd in (self.batch_documents or [])]
+
     def to_dict(self):
         return {
             'id': self.id,
-            'document_ids': self.document_ids or [],
+            'document_ids': self.document_ids,
             'document_type': self.document_type,
             'status': self.status,
             'overall_score': self.overall_score,
@@ -311,6 +331,21 @@ class BatchAnalysis(TenantBase):
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'processing_time': self.processing_time,
         }
+
+
+class BatchDocument(TenantBase):
+    """Pivot table — links a BatchAnalysis to its constituent Documents."""
+    __tablename__ = 'batch_documents'
+
+    id = Column(Integer, primary_key=True)
+    batch_id = Column(Integer, ForeignKey('batch_analyses.id', ondelete='CASCADE'), nullable=False)
+    document_id = Column(Integer, ForeignKey('documents.id', ondelete='CASCADE'), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('batch_id', 'document_id', name='uq_batch_document'),
+        Index('ix_batch_documents_batch_id', 'batch_id'),
+        Index('ix_batch_documents_document_id', 'document_id'),
+    )
 
 
 # ---- pgvector Tables (Tenant DB) --------------------------------------------
@@ -457,6 +492,13 @@ def init_db():
         'ALTER TABLE batch_analyses ADD COLUMN score_rationale JSON DEFAULT \'[]\'',
         # Database-per-tenant: add db_name to tenants
         'ALTER TABLE tenants ADD COLUMN db_name VARCHAR(100)',
+        # Per-tenant LLM configuration
+        'ALTER TABLE tenants ADD COLUMN llm_aws_bearer_token TEXT',
+        'ALTER TABLE tenants ADD COLUMN llm_aws_region VARCHAR(50)',
+        'ALTER TABLE tenants ADD COLUMN llm_bedrock_model_id VARCHAR(100)',
+        'ALTER TABLE tenants ADD COLUMN llm_config_updated_at TIMESTAMP',
+        # Pivot table migration: make old JSON column nullable before dropping mapping
+        'ALTER TABLE batch_analyses ALTER COLUMN document_ids DROP NOT NULL',
     ]
     with engine.connect() as conn:
         for stmt in migrations:
@@ -465,6 +507,49 @@ def init_db():
                 conn.commit()
             except Exception:
                 conn.rollback()  # column / constraint already exists — safe to ignore
+
+    # Batch documents pivot table + data migration (central DB / default tenant)
+    _run_batch_pivot_migrations(engine)
+
+
+def _run_batch_pivot_migrations(engine):
+    """Create batch_documents pivot table and migrate existing JSON data.
+
+    Safe to run multiple times — all statements are idempotent.
+    """
+    stmts = [
+        # 1. Create the pivot table if it doesn't exist
+        """
+        CREATE TABLE IF NOT EXISTS batch_documents (
+            id          SERIAL PRIMARY KEY,
+            batch_id    INTEGER NOT NULL
+                            REFERENCES batch_analyses(id) ON DELETE CASCADE,
+            document_id INTEGER NOT NULL
+                            REFERENCES documents(id)      ON DELETE CASCADE,
+            CONSTRAINT uq_batch_document UNIQUE (batch_id, document_id)
+        )
+        """,
+        # 2. Indexes for fast lookups in both directions
+        'CREATE INDEX IF NOT EXISTS ix_batch_documents_batch_id    ON batch_documents(batch_id)',
+        'CREATE INDEX IF NOT EXISTS ix_batch_documents_document_id ON batch_documents(document_id)',
+        # 3. Migrate existing JSON array data → pivot rows (idempotent via ON CONFLICT DO NOTHING)
+        """
+        INSERT INTO batch_documents (batch_id, document_id)
+        SELECT ba.id, (elem.value::text)::integer
+        FROM   batch_analyses ba,
+               json_array_elements(ba.document_ids) AS elem(value)
+        WHERE  ba.document_ids IS NOT NULL
+          AND  ba.document_ids::text NOT IN ('null', '[]')
+        ON CONFLICT DO NOTHING
+        """,
+    ]
+    with engine.connect() as conn:
+        for stmt in stmts:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+            except Exception:
+                conn.rollback()
 
 
 def get_central_db():

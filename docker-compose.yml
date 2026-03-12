@@ -131,6 +131,8 @@ services:
       BEDROCK_MODEL_ID: ${BEDROCK_MODEL_ID:-apac.amazon.nova-lite-v1:0}
       UPLOAD_FOLDER: /app/uploads
       ANONYMIZED_TELEMETRY: 'False'
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-env}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-change-me-in-env}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-mistral:7b}
       CELERY_BROKER_URL: redis://doc-analyzer-redis:6379/1

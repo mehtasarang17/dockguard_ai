@@ -40,31 +40,181 @@ security:
   - BearerAuth: []
 
 tags:
-  - name: Documents
-    description: Upload, list, and manage compliance documents
-  - name: Analysis
-    description: View and run AI analysis results
-  - name: Batch
-    description: Upload and analyze multiple documents at once
-  - name: Chat
-    description: Knowledge base chat and document generation
-  - name: Knowledge Base
-    description: Manage the vector knowledge base
-  - name: Frameworks
-    description: Compliance framework standards (ISO 27001, SOC 2, etc.)
-  - name: History & Stats
-    description: Analysis history, score trends, and token usage
-  - name: Settings
-    description: LLM provider selection and Ollama management
   - name: Admin
     description: Tenant and key management (is_admin required)
   - name: Provisioning
     description: Auto-provision tenants (SaaS integration, secured with master key)
+  - name: Settings
+    description: LLM provider selection, per-tenant configuration, and Ollama management
+  - name: Batch
+    description: Upload and analyze multiple documents at once
+  - name: Documents
+    description: Upload, list, manage, and analyze compliance documents
+  - name: Chat
+    description: Knowledge base chat and document generation
+  - name: Frameworks
+    description: Compliance framework standards (ISO 27001, SOC 2, etc.)
+  - name: Knowledge Base
+    description: Manage the vector knowledge base
+  - name: History & Stats
+    description: Analysis history, score trends, and token usage
 
 # ============================================================
-# PROVISIONING — SaaS Integration
+# 1. ADMIN — requires is_admin flag
 # ============================================================
 paths:
+  /admin/tenants:
+    get:
+      tags: [Admin]
+      summary: List all tenants
+      description: "Requires `is_admin` flag on the API key."
+      responses:
+        200:
+          description: Tenant list
+          schema:
+            type: object
+            properties:
+              tenants:
+                type: array
+                items:
+                  $ref: '#/definitions/TenantSummary'
+        403:
+          $ref: '#/responses/Forbidden'
+    post:
+      tags: [Admin]
+      summary: Create a tenant
+      description: "Requires `is_admin` flag on the API key."
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            required: [name, slug]
+            properties:
+              name:
+                type: string
+                example: Acme Corp
+              slug:
+                type: string
+                example: acme-corp
+      responses:
+        201:
+          description: Tenant created with first API key
+          schema:
+            type: object
+            properties:
+              tenant:
+                $ref: '#/definitions/TenantSummary'
+              first_api_key:
+                type: string
+        403:
+          $ref: '#/responses/Forbidden'
+
+  /admin/tenants/{tenantId}:
+    patch:
+      tags: [Admin]
+      summary: Update tenant
+      description: "Requires `is_admin` flag on the API key."
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          type: integer
+        - in: body
+          name: body
+          schema:
+            type: object
+            properties:
+              name:
+                type: string
+              is_active:
+                type: boolean
+      responses:
+        200:
+          description: Tenant updated
+        403:
+          $ref: '#/responses/Forbidden'
+        404:
+          $ref: '#/responses/NotFound'
+
+  /admin/tenants/{tenantId}/keys:
+    get:
+      tags: [Admin]
+      summary: List API keys for a tenant
+      description: "Requires `is_admin` flag on the API key."
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          type: integer
+      responses:
+        200:
+          description: Keys list
+          schema:
+            type: object
+            properties:
+              keys:
+                type: array
+                items:
+                  $ref: '#/definitions/AppDetail'
+        403:
+          $ref: '#/responses/Forbidden'
+    post:
+      tags: [Admin]
+      summary: Create an API key for a tenant
+      description: "Requires `is_admin` flag on the API key."
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          type: integer
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            required: [name]
+            properties:
+              name:
+                type: string
+                example: Production Key
+              is_admin:
+                type: boolean
+                default: false
+      responses:
+        201:
+          description: New API key created
+          schema:
+            $ref: '#/definitions/AppDetail'
+        403:
+          $ref: '#/responses/Forbidden'
+
+  /admin/tenants/{tenantId}/keys/{keyId}:
+    delete:
+      tags: [Admin]
+      summary: Revoke a tenant API key
+      description: "Requires `is_admin` flag on the API key."
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          type: integer
+        - name: keyId
+          in: path
+          required: true
+          type: integer
+      responses:
+        200:
+          description: Key revoked
+        403:
+          $ref: '#/responses/Forbidden'
+        404:
+          $ref: '#/responses/NotFound'
+
+# ============================================================
+# 2. PROVISIONING — SaaS Integration
+# ============================================================
   /provision:
     post:
       tags: [Provisioning]
@@ -75,6 +225,10 @@ paths:
 
         **No Bearer auth needed** — this is a public provisioning endpoint.
         **Idempotent:** If the slug already exists, returns the existing tenant (200).
+
+        **Optional LLM Configuration:** You can pass `llm_aws_bearer_token`, `llm_aws_region`,
+        and `llm_bedrock_model_id` to pre-configure the tenant's LLM credentials during provisioning.
+        Credentials are validated before saving.
       security: []
       parameters:
         - in: body
@@ -95,6 +249,16 @@ paths:
                 type: integer
                 default: 90
                 description: API key validity in days (default 90)
+              llm_aws_bearer_token:
+                type: string
+                description: AWS Bedrock bearer token (optional, encrypted at rest)
+              llm_aws_region:
+                type: string
+                default: us-east-1
+                description: AWS region for Bedrock (e.g., us-east-1, us-west-2)
+              llm_bedrock_model_id:
+                type: string
+                description: Bedrock model ID (default from server config)
       responses:
         201:
           description: Tenant created
@@ -112,6 +276,9 @@ paths:
               expires_at:
                 type: string
                 format: date-time
+              llm_configured:
+                type: boolean
+                description: Whether LLM credentials were set during provisioning
               created:
                 type: boolean
                 example: true
@@ -133,13 +300,15 @@ paths:
                 format: date-time
               is_expired:
                 type: boolean
+              llm_configured:
+                type: boolean
               created:
                 type: boolean
                 example: false
               message:
                 type: string
         400:
-          description: Missing name or slug
+          description: Missing name or slug, or invalid LLM credentials
 
   /refresh-key:
     post:
@@ -150,6 +319,9 @@ paths:
         resets the expiration. The old key and refresh token are invalidated.
 
         **No Bearer auth needed** — uses the refresh token for authentication.
+
+        Also returns LLM configuration status so the client can prompt for
+        credential updates if needed.
       security: []
       parameters:
         - in: body
@@ -183,6 +355,19 @@ paths:
                 format: date-time
               tenant_id:
                 type: integer
+              llm_configured:
+                type: boolean
+                description: Whether the tenant has LLM credentials configured
+              llm_aws_region:
+                type: string
+                description: Current LLM region (if configured)
+              llm_bedrock_model_id:
+                type: string
+                description: Current Bedrock model ID (if configured)
+              llm_config_updated_at:
+                type: string
+                format: date-time
+                description: When LLM config was last updated
               message:
                 type: string
         400:
@@ -198,7 +383,7 @@ paths:
       summary: Verify an API key and get tenant info
       description: |
         Checks if an API key is valid, active, and not expired.
-        Returns the tenant name and status.
+        Returns the tenant name, status, and LLM configuration status.
 
         **No Bearer auth needed** — the API key is passed in the request body.
       security: []
@@ -233,6 +418,9 @@ paths:
                 format: date-time
               is_admin:
                 type: boolean
+              llm_configured:
+                type: boolean
+                description: Whether the tenant has LLM credentials configured
         400:
           description: Missing api_key
         401:
@@ -241,24 +429,9 @@ paths:
           description: API key disabled
 
 # ============================================================
-# SETTINGS — LLM Provider & Ollama
+# 3. SETTINGS — LLM Provider, Tenant Config & Ollama
 # ============================================================
   /settings/llm-provider:
-    get:
-      tags: [Settings]
-      summary: Get current LLM provider
-      description: Returns the active provider (bedrock or ollama) and available models.
-      responses:
-        200:
-          description: Provider info
-          schema:
-            type: object
-            properties:
-              provider:
-                type: string
-                enum: [bedrock, ollama]
-              model:
-                type: string
     post:
       tags: [Settings]
       summary: Set LLM provider
@@ -279,24 +452,109 @@ paths:
       responses:
         200:
           description: Provider updated
-
-  /ollama/status:
     get:
       tags: [Settings]
-      summary: Ollama service status
-      description: Checks whether the Ollama service is reachable and lists available models.
+      summary: Get current LLM provider
+      description: Returns the active provider (bedrock or ollama) and available models.
       responses:
         200:
-          description: Ollama status
+          description: Provider info
           schema:
             type: object
             properties:
-              connected:
+              provider:
+                type: string
+                enum: [bedrock, ollama]
+              model:
+                type: string
+
+  /tenant/llm-config:
+    post:
+      tags: [Settings]
+      summary: Set tenant LLM configuration
+      description: |
+        Set or update the tenant's per-tenant LLM configuration for AWS Bedrock.
+        Credentials are validated before saving by making a test API call.
+        The bearer token is encrypted at rest.
+
+        After updating, the cached LLM client for this tenant is cleared.
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            required: [aws_bearer_token]
+            properties:
+              aws_bearer_token:
+                type: string
+                description: AWS Bedrock bearer token (encrypted at rest)
+              aws_region:
+                type: string
+                default: us-east-1
+                description: AWS region (us-east-1, us-west-2, eu-west-1, etc.)
+              bedrock_model_id:
+                type: string
+                default: amazon.nova-lite-v1:0
+                description: Bedrock model ID
+      responses:
+        200:
+          description: Configuration saved successfully
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                example: LLM configuration saved successfully
+              has_config:
                 type: boolean
-              models:
-                type: array
-                items:
-                  type: string
+              aws_region:
+                type: string
+              bedrock_model_id:
+                type: string
+        400:
+          description: Invalid credentials
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: Invalid credentials
+              message:
+                type: string
+                example: Invalid or expired bearer token
+        404:
+          description: Tenant not found
+    get:
+      tags: [Settings]
+      summary: Get tenant LLM configuration status
+      description: |
+        Returns LLM configuration status (NOT credentials) for the authenticated tenant.
+        Use this to check if the tenant has configured their Bedrock credentials.
+      responses:
+        200:
+          description: LLM configuration status
+          schema:
+            type: object
+            properties:
+              has_config:
+                type: boolean
+                description: Whether the tenant has LLM credentials configured
+              aws_region:
+                type: string
+                example: us-east-1
+              bedrock_model_id:
+                type: string
+                example: amazon.nova-lite-v1:0
+              bearer_token_set:
+                type: boolean
+                description: Whether a bearer token is set (does not expose the token)
+              updated_at:
+                type: string
+                format: date-time
+                description: When the LLM config was last updated
+        404:
+          description: Tenant not found
 
   /ollama/pull:
     post:
@@ -318,168 +576,26 @@ paths:
         200:
           description: SSE stream of pull progress
 
-# ============================================================
-# DOCUMENTS
-# ============================================================
-  /documents:
+  /ollama/status:
     get:
-      tags: [Documents]
-      summary: List all documents
-      description: Returns all documents belonging to the authenticated tenant.
+      tags: [Settings]
+      summary: Ollama service status
+      description: Checks whether the Ollama service is reachable and lists available models.
       responses:
         200:
-          description: List of documents
+          description: Ollama status
           schema:
             type: object
             properties:
-              documents:
-                type: array
-                items:
-                  $ref: '#/definitions/DocumentSummary'
-        401:
-          $ref: '#/responses/Unauthorized'
-
-  /upload:
-    post:
-      tags: [Documents]
-      summary: Upload and analyze a document
-      description: Upload a single document. Analysis runs asynchronously.
-      consumes:
-        - multipart/form-data
-      parameters:
-        - name: file
-          in: formData
-          required: true
-          type: file
-          description: The document file (PDF, DOCX, TXT, XLSX, CSV)
-        - name: document_type
-          in: formData
-          required: true
-          type: string
-          enum: [policy, procedure, report, contract, other]
-          description: Document type classification
-      responses:
-        201:
-          description: Document queued for analysis
-          schema:
-            type: object
-            properties:
-              document_id:
-                type: integer
-              message:
-                type: string
-              status:
-                type: string
-        400:
-          description: No file or unsupported extension
-        401:
-          $ref: '#/responses/Unauthorized'
-
-  /documents/{id}:
-    get:
-      tags: [Documents]
-      summary: Get a single document
-      parameters:
-        - $ref: '#/parameters/DocId'
-      responses:
-        200:
-          description: Document details
-          schema:
-            $ref: '#/definitions/DocumentSummary'
-        404:
-          $ref: '#/responses/NotFound'
-    delete:
-      tags: [Documents]
-      summary: Delete a document
-      parameters:
-        - $ref: '#/parameters/DocId'
-      responses:
-        200:
-          description: Document deleted
-        404:
-          $ref: '#/responses/NotFound'
-
-  /documents/{id}/rename:
-    patch:
-      tags: [Documents]
-      summary: Rename a document
-      parameters:
-        - $ref: '#/parameters/DocId'
-        - in: body
-          name: body
-          required: true
-          schema:
-            type: object
-            required: [filename]
-            properties:
-              filename:
-                type: string
-                example: updated-policy.pdf
-      responses:
-        200:
-          description: Renamed successfully
-        404:
-          $ref: '#/responses/NotFound'
-
-  /documents/{id}/save:
-    post:
-      tags: [Documents]
-      summary: Save document to knowledge base
-      description: Chunks and indexes the document into the tenant's vector KB.
-      parameters:
-        - $ref: '#/parameters/DocId'
-      responses:
-        200:
-          description: Saved to KB
-        404:
-          $ref: '#/responses/NotFound'
-
-# ============================================================
-# ANALYSIS
-# ============================================================
-  /analysis/{id}:
-    get:
-      tags: [Analysis]
-      summary: Get analysis results
-      description: Returns full AI analysis (compliance, security, risk, frameworks, gaps, score).
-      parameters:
-        - $ref: '#/parameters/DocId'
-      responses:
-        200:
-          description: Full analysis results
-          schema:
-            type: object
-            properties:
-              analysis:
-                type: object
-        404:
-          $ref: '#/responses/NotFound'
-
-  /analysis/{id}/check-frameworks:
-    post:
-      tags: [Analysis]
-      summary: Run framework comparison
-      description: Compares document against uploaded compliance frameworks (ISO 27001, SOC 2, etc.).
-      parameters:
-        - $ref: '#/parameters/DocId'
-        - in: body
-          name: body
-          schema:
-            type: object
-            properties:
-              frameworks:
+              connected:
+                type: boolean
+              models:
                 type: array
                 items:
                   type: string
-                  enum: [ISO27001, SOC2, GDPR, HIPAA, NIST, CIS]
-      responses:
-        200:
-          description: Framework comparison results
-        404:
-          $ref: '#/responses/NotFound'
 
 # ============================================================
-# BATCH
+# 4. BATCH
 # ============================================================
   /upload-batch:
     post:
@@ -545,7 +661,164 @@ paths:
           description: All documents saved to KB
 
 # ============================================================
-# CHAT
+# 5. DOCUMENTS
+# ============================================================
+  /upload:
+    post:
+      tags: [Documents]
+      summary: Upload and analyze a document
+      description: Upload a single document. Analysis runs asynchronously.
+      consumes:
+        - multipart/form-data
+      parameters:
+        - name: file
+          in: formData
+          required: true
+          type: file
+          description: The document file (PDF, DOCX, TXT, XLSX, CSV)
+        - name: document_type
+          in: formData
+          required: true
+          type: string
+          enum: [policy, procedure, report, contract, other]
+          description: Document type classification
+      responses:
+        201:
+          description: Document queued for analysis
+          schema:
+            type: object
+            properties:
+              document_id:
+                type: integer
+              message:
+                type: string
+              status:
+                type: string
+        400:
+          description: No file or unsupported extension
+        401:
+          $ref: '#/responses/Unauthorized'
+
+  /documents:
+    get:
+      tags: [Documents]
+      summary: List all documents
+      description: Returns all documents belonging to the authenticated tenant.
+      responses:
+        200:
+          description: List of documents
+          schema:
+            type: object
+            properties:
+              documents:
+                type: array
+                items:
+                  $ref: '#/definitions/DocumentSummary'
+        401:
+          $ref: '#/responses/Unauthorized'
+
+  /documents/{id}:
+    get:
+      tags: [Documents]
+      summary: Get a single document
+      parameters:
+        - $ref: '#/parameters/DocId'
+      responses:
+        200:
+          description: Document details
+          schema:
+            $ref: '#/definitions/DocumentSummary'
+        404:
+          $ref: '#/responses/NotFound'
+    delete:
+      tags: [Documents]
+      summary: Delete a document
+      parameters:
+        - $ref: '#/parameters/DocId'
+      responses:
+        200:
+          description: Document deleted
+        404:
+          $ref: '#/responses/NotFound'
+
+  /documents/{id}/rename:
+    patch:
+      tags: [Documents]
+      summary: Rename a document
+      parameters:
+        - $ref: '#/parameters/DocId'
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            required: [filename]
+            properties:
+              filename:
+                type: string
+                example: updated-policy.pdf
+      responses:
+        200:
+          description: Renamed successfully
+        404:
+          $ref: '#/responses/NotFound'
+
+  /documents/{id}/save:
+    post:
+      tags: [Documents]
+      summary: Save document to knowledge base
+      description: Chunks and indexes the document into the tenant's vector KB.
+      parameters:
+        - $ref: '#/parameters/DocId'
+      responses:
+        200:
+          description: Saved to KB
+        404:
+          $ref: '#/responses/NotFound'
+
+  /analysis/{id}:
+    get:
+      tags: [Documents]
+      summary: Get analysis results
+      description: Returns full AI analysis (compliance, security, risk, frameworks, gaps, score).
+      parameters:
+        - $ref: '#/parameters/DocId'
+      responses:
+        200:
+          description: Full analysis results
+          schema:
+            type: object
+            properties:
+              analysis:
+                type: object
+        404:
+          $ref: '#/responses/NotFound'
+
+  /analysis/{id}/check-frameworks:
+    post:
+      tags: [Documents]
+      summary: Run framework comparison
+      description: Compares document against uploaded compliance frameworks (ISO 27001, SOC 2, etc.).
+      parameters:
+        - $ref: '#/parameters/DocId'
+        - in: body
+          name: body
+          schema:
+            type: object
+            properties:
+              frameworks:
+                type: array
+                items:
+                  type: string
+                  enum: [ISO27001, SOC2, GDPR, HIPAA, NIST, CIS]
+      responses:
+        200:
+          description: Framework comparison results
+        404:
+          $ref: '#/responses/NotFound'
+
+# ============================================================
+# 6. CHAT
 # ============================================================
   /chat:
     post:
@@ -614,22 +887,6 @@ paths:
         200:
           description: File attached to session
 
-  /chat/save-file:
-    post:
-      tags: [Chat]
-      summary: Save chat-attached file to knowledge base
-      responses:
-        200:
-          description: Saved to KB
-
-  /chat/clear-file:
-    post:
-      tags: [Chat]
-      summary: Remove attached chat file
-      responses:
-        200:
-          description: File cleared
-
   /chat/fill-document:
     post:
       tags: [Chat]
@@ -675,8 +932,89 @@ paths:
         200:
           description: File download
 
+  /chat/save-file:
+    post:
+      tags: [Chat]
+      summary: Save chat-attached file to knowledge base
+      responses:
+        200:
+          description: Saved to KB
+
+  /chat/clear-file:
+    post:
+      tags: [Chat]
+      summary: Remove attached chat file
+      responses:
+        200:
+          description: File cleared
+
 # ============================================================
-# KNOWLEDGE BASE
+# 7. FRAMEWORKS
+# ============================================================
+  /frameworks/upload:
+    post:
+      tags: [Frameworks]
+      summary: Upload a framework standard
+      consumes:
+        - multipart/form-data
+      parameters:
+        - name: file
+          in: formData
+          required: true
+          type: file
+          description: The standard PDF (e.g. ISO 27001:2022)
+        - name: framework_key
+          in: formData
+          required: true
+          type: string
+          enum: [ISO27001, SOC2, GDPR, HIPAA, NIST, CIS]
+        - name: version
+          in: formData
+          type: string
+          example: "2022"
+      responses:
+        201:
+          description: Framework uploaded and indexed
+        400:
+          description: Missing fields or unsupported file type
+
+  /frameworks:
+    get:
+      tags: [Frameworks]
+      summary: List uploaded framework standards
+      responses:
+        200:
+          description: Frameworks by key
+          schema:
+            type: object
+            properties:
+              frameworks:
+                type: object
+
+  /frameworks/status:
+    get:
+      tags: [Frameworks]
+      summary: Framework upload status
+      description: Which standard PDFs have been uploaded for the tenant.
+      responses:
+        200:
+          description: Upload status per framework key
+
+  /frameworks/{id}:
+    delete:
+      tags: [Frameworks]
+      summary: Delete a framework standard
+      parameters:
+        - name: id
+          in: path
+          required: true
+          type: integer
+      responses:
+        200:
+          description: Framework deleted
+
+# ============================================================
+# 8. KNOWLEDGE BASE
 # ============================================================
   /kb/stats:
     get:
@@ -722,72 +1060,7 @@ paths:
                 type: integer
 
 # ============================================================
-# FRAMEWORKS
-# ============================================================
-  /frameworks:
-    get:
-      tags: [Frameworks]
-      summary: List uploaded framework standards
-      responses:
-        200:
-          description: Frameworks by key
-          schema:
-            type: object
-            properties:
-              frameworks:
-                type: object
-
-  /frameworks/status:
-    get:
-      tags: [Frameworks]
-      summary: Framework upload status
-      description: Which standard PDFs have been uploaded for the tenant.
-      responses:
-        200:
-          description: Upload status per framework key
-
-  /frameworks/upload:
-    post:
-      tags: [Frameworks]
-      summary: Upload a framework standard
-      consumes:
-        - multipart/form-data
-      parameters:
-        - name: file
-          in: formData
-          required: true
-          type: file
-          description: The standard PDF (e.g. ISO 27001:2022)
-        - name: framework_key
-          in: formData
-          required: true
-          type: string
-          enum: [ISO27001, SOC2, GDPR, HIPAA, NIST, CIS]
-        - name: version
-          in: formData
-          type: string
-          example: "2022"
-      responses:
-        201:
-          description: Framework uploaded and indexed
-        400:
-          description: Missing fields or unsupported file type
-
-  /frameworks/{id}:
-    delete:
-      tags: [Frameworks]
-      summary: Delete a framework standard
-      parameters:
-        - name: id
-          in: path
-          required: true
-          type: integer
-      responses:
-        200:
-          description: Framework deleted
-
-# ============================================================
-# HISTORY & STATS
+# 9. HISTORY & STATS
 # ============================================================
   /history:
     get:
@@ -832,158 +1105,6 @@ paths:
       responses:
         200:
           description: Counters reset
-
-# ============================================================
-# ADMIN — requires is_admin flag
-# ============================================================
-  /admin/tenants:
-    get:
-      tags: [Admin]
-      summary: List all tenants
-      description: "⚠️ Requires `is_admin` flag on the API key."
-      responses:
-        200:
-          description: Tenant list
-          schema:
-            type: object
-            properties:
-              tenants:
-                type: array
-                items:
-                  $ref: '#/definitions/TenantSummary'
-        403:
-          $ref: '#/responses/Forbidden'
-    post:
-      tags: [Admin]
-      summary: Create a tenant
-      description: "⚠️ Requires `is_admin` flag on the API key."
-      parameters:
-        - in: body
-          name: body
-          required: true
-          schema:
-            type: object
-            required: [name, slug]
-            properties:
-              name:
-                type: string
-                example: Acme Corp
-              slug:
-                type: string
-                example: acme-corp
-      responses:
-        201:
-          description: Tenant created with first API key
-          schema:
-            type: object
-            properties:
-              tenant:
-                $ref: '#/definitions/TenantSummary'
-              first_api_key:
-                type: string
-        403:
-          $ref: '#/responses/Forbidden'
-
-  /admin/tenants/{tenantId}:
-    patch:
-      tags: [Admin]
-      summary: Update tenant
-      description: "⚠️ Requires `is_admin` flag on the API key."
-      parameters:
-        - name: tenantId
-          in: path
-          required: true
-          type: integer
-        - in: body
-          name: body
-          schema:
-            type: object
-            properties:
-              name:
-                type: string
-              is_active:
-                type: boolean
-      responses:
-        200:
-          description: Tenant updated
-        403:
-          $ref: '#/responses/Forbidden'
-        404:
-          $ref: '#/responses/NotFound'
-
-  /admin/tenants/{tenantId}/keys:
-    get:
-      tags: [Admin]
-      summary: List API keys for a tenant
-      description: "⚠️ Requires `is_admin` flag on the API key."
-      parameters:
-        - name: tenantId
-          in: path
-          required: true
-          type: integer
-      responses:
-        200:
-          description: Keys list
-          schema:
-            type: object
-            properties:
-              keys:
-                type: array
-                items:
-                  $ref: '#/definitions/AppDetail'
-        403:
-          $ref: '#/responses/Forbidden'
-    post:
-      tags: [Admin]
-      summary: Create an API key for a tenant
-      description: "⚠️ Requires `is_admin` flag on the API key."
-      parameters:
-        - name: tenantId
-          in: path
-          required: true
-          type: integer
-        - in: body
-          name: body
-          required: true
-          schema:
-            type: object
-            required: [name]
-            properties:
-              name:
-                type: string
-                example: Production Key
-              is_admin:
-                type: boolean
-                default: false
-      responses:
-        201:
-          description: New API key created
-          schema:
-            $ref: '#/definitions/AppDetail'
-        403:
-          $ref: '#/responses/Forbidden'
-
-  /admin/tenants/{tenantId}/keys/{keyId}:
-    delete:
-      tags: [Admin]
-      summary: Revoke a tenant API key
-      description: "⚠️ Requires `is_admin` flag on the API key."
-      parameters:
-        - name: tenantId
-          in: path
-          required: true
-          type: integer
-        - name: keyId
-          in: path
-          required: true
-          type: integer
-      responses:
-        200:
-          description: Key revoked
-        403:
-          $ref: '#/responses/Forbidden'
-        404:
-          $ref: '#/responses/NotFound'
 
 # ============================================================
 # REUSABLE COMPONENTS
@@ -1097,6 +1218,9 @@ definitions:
         description: "PostgreSQL database name for this tenant's isolated data."
       is_active:
         type: boolean
+      has_llm_config:
+        type: boolean
+        description: "Whether the tenant has per-tenant LLM credentials configured."
       created_at:
         type: string
         format: date-time

@@ -2378,6 +2378,22 @@ async function loadKBStats() {
 
 // ---- Init -------------------------------------------------------------------
 document.addEventListener('DOMContentLoaded', async () => {
+    // First, check if tenant has LLM config (for onboarding)
+    try {
+        const llmRes = await fetch(`${API_BASE}/api/tenant/llm-config`);
+        if (llmRes.ok) {
+            const llmData = await llmRes.json();
+            if (!llmData.has_config) {
+                // No LLM config — show required onboarding modal
+                openLlmConfigModal(true);
+                navigateTo('dashboard');
+                return; // Don't show LLM provider modal
+            }
+        }
+    } catch (e) {
+        console.log('LLM config check skipped:', e);
+    }
+
     // Check LLM provider — show selector on every load so user sees current engine
     try {
         const res = await fetch(`${API_BASE}/api/settings/llm-provider`);
@@ -2914,7 +2930,7 @@ openSettings = function (e) {
 // SETTINGS — Tab Switching
 // ============================================================
 function switchSettingsTab(tab) {
-    ['tenants', 'docs'].forEach(t => {
+    ['tenants', 'llm', 'docs'].forEach(t => {
         document.getElementById(`stab-${t}`)?.classList.remove('active');
         const panel = document.getElementById(`spanel-${t}`);
         if (panel) panel.style.display = 'none';
@@ -2924,6 +2940,7 @@ function switchSettingsTab(tab) {
     if (active) active.style.display = '';
 
     if (tab === 'tenants') loadTenants();
+    if (tab === 'llm') loadLlmSettings();
 }
 
 
@@ -3190,4 +3207,283 @@ function copyText(text) {
         prompt('Copy this key:', text);
     });
 }
+
+// ============================================================
+// PER-TENANT LLM CONFIGURATION
+// ============================================================
+let _llmConfigRequired = false; // Whether config is required for onboarding
+
+async function checkLlmConfig() {
+    // Check if tenant has LLM config, show modal if not
+    try {
+        const res = await fetch(`${API_BASE}/api/tenant/llm-config`);
+        if (!res.ok) return true; // Assume configured if we can't check
+        const data = await res.json();
+        return data.has_config;
+    } catch (e) {
+        console.warn('Could not check LLM config:', e);
+        return true; // Assume configured on error
+    }
+}
+
+async function showLlmConfigOnboarding() {
+    // Check LLM config and show modal if not configured
+    const hasConfig = await checkLlmConfig();
+    if (!hasConfig) {
+        _llmConfigRequired = true;
+        openLlmConfigModal(true);
+    }
+}
+
+function openLlmConfigModal(isRequired = false) {
+    const modal = document.getElementById('llmConfigModal');
+    const skipBtn = document.getElementById('llmConfigSkipBtn');
+    const errorDiv = document.getElementById('llmConfigError');
+
+    // Reset form
+    document.getElementById('llmBearerToken').value = '';
+    document.getElementById('llmRegion').value = 'us-east-1';
+    document.getElementById('llmModel').value = 'amazon.nova-lite-v1:0';
+    errorDiv.style.display = 'none';
+
+    // Show/hide skip button based on whether this is required
+    _llmConfigRequired = isRequired;
+    if (skipBtn) {
+        skipBtn.style.display = isRequired ? 'none' : '';
+    }
+
+    modal.style.display = 'flex';
+
+    // Prevent backdrop click close if required
+    if (isRequired) {
+        modal.onclick = (e) => {
+            if (e.target === modal) {
+                // Shake the modal to indicate it can't be closed
+                const inner = modal.querySelector('.llm-config-modal');
+                inner.style.animation = 'shake 0.3s ease';
+                setTimeout(() => inner.style.animation = '', 300);
+            }
+        };
+    } else {
+        modal.onclick = (e) => {
+            if (e.target === modal) closeLlmConfigModal();
+        };
+    }
+}
+
+function closeLlmConfigModal() {
+    const modal = document.getElementById('llmConfigModal');
+    modal.style.display = 'none';
+}
+
+async function saveLlmConfig() {
+    const btn = document.getElementById('llmConfigSaveBtn');
+    const btnText = document.getElementById('llmConfigSaveBtnText');
+    const errorDiv = document.getElementById('llmConfigError');
+    const errorMsg = document.getElementById('llmConfigErrorMsg');
+
+    const bearerToken = document.getElementById('llmBearerToken').value.trim();
+    const region = document.getElementById('llmRegion').value;
+    const model = document.getElementById('llmModel').value;
+
+    if (!bearerToken) {
+        errorDiv.style.display = 'flex';
+        errorMsg.textContent = 'Bearer token is required';
+        return;
+    }
+
+    btn.disabled = true;
+    btnText.textContent = 'Validating...';
+    errorDiv.style.display = 'none';
+
+    try {
+        const res = await fetch(`${API_BASE}/api/tenant/llm-config`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                aws_bearer_token: bearerToken,
+                aws_region: region,
+                bedrock_model_id: model,
+            }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+            errorDiv.style.display = 'flex';
+            errorMsg.textContent = data.message || data.error || 'Failed to save configuration';
+            return;
+        }
+
+        // Success!
+        closeLlmConfigModal();
+
+        // Show success toast
+        const toast = document.createElement('div');
+        toast.className = 'toast-copied';
+        toast.innerHTML = '<i class="fas fa-check"></i> LLM configuration saved!';
+        toast.style.cssText = 'position:fixed;bottom:1.5rem;right:1.5rem;background:rgba(16,185,129,.9);color:#fff;padding:.5rem 1rem;border-radius:8px;font-size:.85rem;font-weight:600;z-index:9999;animation:fadeIn .2s ease;display:flex;gap:.4rem;align-items:center;';
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 3000);
+
+        // If we were on the LLM settings tab, reload it
+        if (document.getElementById('spanel-llm')?.style.display !== 'none') {
+            loadLlmSettings();
+        }
+
+    } catch (e) {
+        errorDiv.style.display = 'flex';
+        errorMsg.textContent = 'Network error: ' + e.message;
+    } finally {
+        btn.disabled = false;
+        btnText.textContent = 'Validate & Save';
+    }
+}
+
+async function loadLlmSettings() {
+    const statusIndicator = document.getElementById('llmStatusIndicator');
+    const statusTitle = document.getElementById('llmStatusTitle');
+    const statusDesc = document.getElementById('llmStatusDesc');
+    const detailsDiv = document.getElementById('llmSettingsDetails');
+    const detailRegion = document.getElementById('llmDetailRegion');
+    const detailModel = document.getElementById('llmDetailModel');
+    const detailUpdated = document.getElementById('llmDetailUpdated');
+
+    // Collapse edit form on reload
+    const editForm = document.getElementById('llmInlineEdit');
+    if (editForm) editForm.style.display = 'none';
+    const btnText = document.getElementById('llmUpdateBtnText');
+    if (btnText) btnText.textContent = 'Edit Credentials';
+
+    // Show loading
+    statusIndicator.innerHTML = '<i class="fas fa-spinner fa-spin" style="color:var(--accent-info)"></i>';
+    statusTitle.textContent = 'Loading...';
+    statusDesc.textContent = '';
+    detailsDiv.style.display = 'none';
+
+    try {
+        const res = await fetch(`${API_BASE}/api/tenant/llm-config`);
+        const data = await res.json();
+
+        if (data.has_config) {
+            statusIndicator.innerHTML = '<i class="fas fa-check-circle" style="color:var(--accent-success)"></i>';
+            statusTitle.textContent = 'LLM Configuration Active';
+            statusDesc.textContent = 'Your AWS Bedrock credentials are configured and working.';
+
+            detailRegion.textContent = data.aws_region || '-';
+            detailModel.textContent = data.bedrock_model_id || '-';
+            detailUpdated.textContent = data.updated_at ? formatDate(data.updated_at) : 'Never';
+            detailsDiv.style.display = '';
+
+            // Pre-populate inline form selects with current values
+            const regionEl = document.getElementById('llmInlineRegion');
+            const modelEl = document.getElementById('llmInlineModel');
+            if (regionEl && data.aws_region) regionEl.value = data.aws_region;
+            if (modelEl && data.bedrock_model_id) modelEl.value = data.bedrock_model_id;
+        } else {
+            statusIndicator.innerHTML = '<i class="fas fa-exclamation-triangle" style="color:var(--accent-warning)"></i>';
+            statusTitle.textContent = 'Not Configured';
+            statusDesc.textContent = 'You need to configure your AWS Bedrock credentials to use AI features.';
+            detailsDiv.style.display = 'none';
+        }
+    } catch (e) {
+        statusIndicator.innerHTML = '<i class="fas fa-times-circle" style="color:var(--accent-danger)"></i>';
+        statusTitle.textContent = 'Error Loading Config';
+        statusDesc.textContent = e.message;
+        detailsDiv.style.display = 'none';
+    }
+}
+
+function toggleLlmEditForm() {
+    const form = document.getElementById('llmInlineEdit');
+    const btnText = document.getElementById('llmUpdateBtnText');
+    const isVisible = form.style.display !== 'none';
+
+    if (isVisible) {
+        form.style.display = 'none';
+        btnText.textContent = 'Edit Credentials';
+    } else {
+        // Reset form state
+        document.getElementById('llmInlineBearerToken').value = '';
+        document.getElementById('llmInlineError').style.display = 'none';
+        // Restore eye icon
+        const eye = document.getElementById('llmInlineEyeIcon');
+        if (eye) { eye.className = 'fas fa-eye'; document.getElementById('llmInlineBearerToken').type = 'password'; }
+        form.style.display = '';
+        btnText.textContent = 'Cancel Edit';
+        document.getElementById('llmInlineBearerToken').focus();
+    }
+}
+
+function toggleInlineBearerVisibility() {
+    const input = document.getElementById('llmInlineBearerToken');
+    const icon = document.getElementById('llmInlineEyeIcon');
+    if (input.type === 'password') {
+        input.type = 'text';
+        icon.className = 'fas fa-eye-slash';
+    } else {
+        input.type = 'password';
+        icon.className = 'fas fa-eye';
+    }
+}
+
+async function saveInlineLlmConfig() {
+    const btn = document.getElementById('llmInlineSaveBtn');
+    const btnText = document.getElementById('llmInlineSaveBtnText');
+    const errorDiv = document.getElementById('llmInlineError');
+    const errorMsg = document.getElementById('llmInlineErrorMsg');
+
+    const bearerToken = document.getElementById('llmInlineBearerToken').value.trim();
+    const region = document.getElementById('llmInlineRegion').value;
+    const model = document.getElementById('llmInlineModel').value;
+
+    if (!bearerToken) {
+        errorDiv.style.display = 'flex';
+        errorMsg.textContent = 'Bearer token is required';
+        return;
+    }
+
+    btn.disabled = true;
+    btnText.textContent = 'Validating...';
+    errorDiv.style.display = 'none';
+
+    try {
+        const res = await fetch(`${API_BASE}/api/tenant/llm-config`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ aws_bearer_token: bearerToken, aws_region: region, bedrock_model_id: model }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+            errorDiv.style.display = 'flex';
+            errorMsg.textContent = data.message || data.error || 'Failed to save configuration';
+            return;
+        }
+
+        // Success — collapse form and reload status
+        const toast = document.createElement('div');
+        toast.className = 'toast-copied';
+        toast.innerHTML = '<i class="fas fa-check"></i> LLM configuration saved!';
+        toast.style.cssText = 'position:fixed;bottom:1.5rem;right:1.5rem;background:rgba(16,185,129,.9);color:#fff;padding:.5rem 1rem;border-radius:8px;font-size:.85rem;font-weight:600;z-index:9999;animation:fadeIn .2s ease;display:flex;gap:.4rem;align-items:center;';
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 3000);
+
+        loadLlmSettings();
+    } catch (e) {
+        errorDiv.style.display = 'flex';
+        errorMsg.textContent = 'Network error: ' + e.message;
+    } finally {
+        btn.disabled = false;
+        btnText.textContent = 'Validate & Save';
+    }
+}
+
+// Wire up LLM config modal buttons
+document.getElementById('llmConfigSaveBtn')?.addEventListener('click', saveLlmConfig);
+document.getElementById('llmConfigSkipBtn')?.addEventListener('click', closeLlmConfigModal);
+
+// Allow Enter key to submit in bearer token field
+document.getElementById('llmBearerToken')?.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') saveLlmConfig();
+});
 

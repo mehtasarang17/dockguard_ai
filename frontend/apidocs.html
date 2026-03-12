@@ -424,8 +424,15 @@
             displayRequestDuration: true,
             persistAuthorization: true,
             filter: true,
-            tagsSorter: "alpha",
-            operationsSorter: "alpha",
+            tagsSorter: function(a, b) {
+                // Preserve the order defined in swagger.yml tags array
+                var order = ["Admin", "Provisioning", "Settings", "Batch", "Documents", "Chat", "Frameworks", "Knowledge Base", "History & Stats"];
+                return order.indexOf(a) - order.indexOf(b);
+            },
+            operationsSorter: function(a, b) {
+                // Preserve the order defined in swagger.yml paths
+                return 0;
+            },
             defaultModelsExpandDepth: 0,
             docExpansion: "list",
         });

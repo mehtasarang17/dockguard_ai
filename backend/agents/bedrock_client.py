@@ -8,7 +8,7 @@ class BedrockClient:
     """AWS Bedrock client for Amazon Nova models via the Converse API.
 
     Supports two auth methods:
-    - Bearer token (via AWS_BEARER_TOKEN_BEDROCK)
+    - Bearer token (via AWS_BEARER_TOKEN_BEDROCK or passed directly)
     - IAM credentials (access key / secret key / session token)
 
     Supports hybrid model routing: a primary model and a fast model.
@@ -17,29 +17,44 @@ class BedrockClient:
     This client is designed to be used as a **singleton** (via llm_factory).
     Token tracking is handled externally via TokenTracker — do NOT store
     per-request state on this instance.
+
+    For per-tenant configuration, pass bearer_token, region, and model_id
+    to the constructor to override global Config values.
     """
 
-    def __init__(self):
-        self.model_id = Config.BEDROCK_MODEL_ID
+    def __init__(self, bearer_token: str = None, region: str = None, model_id: str = None):
+        """Initialize the Bedrock client.
+
+        Args:
+            bearer_token: Optional per-tenant bearer token (overrides Config)
+            region: Optional AWS region (overrides Config.AWS_REGION)
+            model_id: Optional model ID (overrides Config.BEDROCK_MODEL_ID)
+        """
+        # Use passed values or fall back to global config
+        self.region = region or Config.AWS_REGION
+        self.model_id = model_id or Config.BEDROCK_MODEL_ID
         self.model_id_fast = Config.BEDROCK_MODEL_ID_FAST
 
         # Legacy per-instance counters (kept for backward compat, e.g. chat)
         self.total_input_tokens = 0
         self.total_output_tokens = 0
 
-        if Config.AWS_BEARER_TOKEN_BEDROCK:
+        # Determine auth method: prefer passed bearer token, then global config
+        effective_bearer_token = bearer_token or Config.AWS_BEARER_TOKEN_BEDROCK
+
+        if effective_bearer_token:
             self.client = boto3.client(
                 'bedrock-runtime',
-                region_name=Config.AWS_REGION,
+                region_name=self.region,
                 aws_access_key_id='',
                 aws_secret_access_key='',
             )
-            self.bearer_token = Config.AWS_BEARER_TOKEN_BEDROCK
+            self.bearer_token = effective_bearer_token
             self.use_bearer = True
         else:
             kwargs = {
                 'service_name': 'bedrock-runtime',
-                'region_name': Config.AWS_REGION,
+                'region_name': self.region,
             }
             if Config.AWS_ACCESS_KEY_ID and Config.AWS_SECRET_ACCESS_KEY:
                 kwargs['aws_access_key_id'] = Config.AWS_ACCESS_KEY_ID
@@ -111,7 +126,7 @@ class BedrockClient:
                        model_id: str, tracker=None) -> str:
         """Call Bedrock Converse API via Bearer token auth (HTTP)."""
         url = (
-            f"https://bedrock-runtime.{Config.AWS_REGION}.amazonaws.com"
+            f"https://bedrock-runtime.{self.region}.amazonaws.com"
             f"/model/{model_id}/converse"
         )
         headers = {

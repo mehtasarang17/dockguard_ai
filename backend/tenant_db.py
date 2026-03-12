@@ -42,7 +42,8 @@ def get_tenant_session(db_name: str):
     """Return a **new** SQLAlchemy session connected to the tenant's database.
 
     Engines are lazily created and cached so that repeated requests for the
-    same tenant reuse the same pool.
+    same tenant reuse the same pool.  On first creation the engine also runs
+    incremental schema migrations so existing tenant DBs stay up to date.
     """
     with _lock:
         if db_name not in _tenant_engines:
@@ -50,9 +51,34 @@ def get_tenant_session(db_name: str):
             engine = create_engine(url, pool_pre_ping=True, poolclass=NullPool)
             factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
             _tenant_engines[db_name] = (engine, factory)
+            # Run incremental migrations for this tenant DB (idempotent)
+            _run_tenant_migrations(engine)
 
     _, factory = _tenant_engines[db_name]
     return factory()
+
+
+def _run_tenant_migrations(engine):
+    """Apply incremental schema migrations to an existing tenant database.
+
+    Called once per process lifetime when a tenant engine is first created.
+    All statements are idempotent — safe to re-run.
+    """
+    from models import _run_batch_pivot_migrations  # deferred to avoid circular import
+
+    stmts = [
+        # Pivot table migration: make old JSON column nullable
+        'ALTER TABLE batch_analyses ALTER COLUMN document_ids DROP NOT NULL',
+    ]
+    with engine.connect() as conn:
+        for stmt in stmts:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+
+    _run_batch_pivot_migrations(engine)
 
 
 # ---- Database lifecycle -----------------------------------------------------
@@ -81,8 +107,8 @@ def create_tenant_database(slug: str) -> str:
             {"name": db_name},
         ).first()
         if not exists:
-            # Use quoted identifier in case slug contains special chars
-            conn.execute(text(f'CREATE DATABASE "{db_name}"'))
+            # Use TEMPLATE template0 to avoid collation version mismatch errors
+            conn.execute(text(f'CREATE DATABASE "{db_name}" TEMPLATE template0'))
             print(f"🗄️  Created PostgreSQL database: {db_name}")
     central_engine.dispose()
 
@@ -121,6 +147,11 @@ def _init_tenant_schema(db_name: str, tenant_base):
                 conn.commit()
             except Exception:
                 conn.rollback()
+
+    # New tenant DBs don't have the old JSON column, so no nullable migration needed,
+    # but run the pivot helper so the table + indexes are always created.
+    from models import _run_batch_pivot_migrations
+    _run_batch_pivot_migrations(engine)
 
     engine.dispose()
     print(f"📋 Tenant schema initialised for database: {db_name}")

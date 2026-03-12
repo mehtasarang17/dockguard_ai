@@ -4320,3 +4320,229 @@ ol.chat-list li::marker {
     outline: none;
     border-color: var(--accent-primary);
 }
+
+/* ============================================================
+   LLM CONFIG MODAL (Per-Tenant Credentials)
+   ============================================================ */
+.llm-config-modal {
+    max-width: 520px;
+    width: 92%;
+    padding: 2rem 2.5rem 2.5rem;
+    text-align: center;
+}
+
+.llm-config-header {
+    margin-bottom: 1.5rem;
+}
+
+.llm-config-icon {
+    width: 56px;
+    height: 56px;
+    border-radius: 16px;
+    background: linear-gradient(135deg, #f97316, #ea580c);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 1rem;
+    font-size: 1.4rem;
+    color: #fff;
+}
+
+.llm-config-header h2 {
+    font-size: 1.3rem;
+    font-weight: 800;
+    margin: 0 0 .3rem;
+}
+
+.llm-config-header p {
+    color: var(--text-secondary);
+    font-size: .88rem;
+    margin: 0;
+}
+
+.llm-config-form {
+    text-align: left;
+    margin-bottom: 1.5rem;
+}
+
+.llm-config-form .form-group {
+    margin-bottom: 1rem;
+}
+
+.llm-config-form .form-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+}
+
+.llm-config-form .field-label {
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+    font-size: .82rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: .4rem;
+}
+
+.llm-config-form .field-hint {
+    font-size: .72rem;
+    color: var(--text-muted);
+    margin-top: .3rem;
+}
+
+.llm-config-form .form-input,
+.llm-config-form .form-select {
+    width: 100%;
+    padding: .65rem .9rem;
+    background: rgba(0, 0, 0, .35);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: .9rem;
+    transition: border-color .2s;
+}
+
+.llm-config-form .form-input:focus,
+.llm-config-form .form-select:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+}
+
+.llm-config-form .form-select {
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%239ca3af'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right .75rem center;
+    background-size: 1rem;
+    padding-right: 2.5rem;
+}
+
+.llm-config-error {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    padding: .75rem 1rem;
+    background: rgba(239, 68, 68, .1);
+    border: 1px solid rgba(239, 68, 68, .25);
+    border-radius: var(--radius-sm);
+    color: #f87171;
+    font-size: .85rem;
+    margin-top: 1rem;
+}
+
+.llm-config-error i {
+    font-size: 1rem;
+}
+
+.llm-config-actions {
+    display: flex;
+    gap: .75rem;
+    justify-content: center;
+    margin-bottom: 1rem;
+}
+
+.llm-config-note {
+    font-size: .75rem;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: .4rem;
+}
+
+/* Shake animation for required modal */
+@keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-8px); }
+    40% { transform: translateX(8px); }
+    60% { transform: translateX(-4px); }
+    80% { transform: translateX(4px); }
+}
+
+/* ============================================================
+   LLM SETTINGS PANEL
+   ============================================================ */
+.llm-settings-card {
+    padding: 1.5rem;
+}
+
+.llm-settings-status {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.llm-status-indicator {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    background: rgba(0, 0, 0, .25);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.4rem;
+}
+
+.llm-status-text h4 {
+    margin: 0 0 .25rem;
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.llm-status-text p {
+    margin: 0;
+    font-size: .82rem;
+}
+
+.llm-settings-details {
+    background: rgba(0, 0, 0, .2);
+    border-radius: var(--radius-sm);
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+.llm-detail-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: .5rem 0;
+    border-bottom: 1px solid rgba(255, 255, 255, .05);
+}
+
+.llm-detail-row:last-child {
+    border-bottom: none;
+}
+
+.llm-detail-label {
+    font-size: .82rem;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+}
+
+.llm-detail-value {
+    font-size: .85rem;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.llm-settings-actions {
+    display: flex;
+    gap: .75rem;
+}
+
+.llm-inline-edit {
+    padding: 1.25rem 1.5rem;
+    border: 1px solid rgba(255, 255, 255, .08);
+    animation: fadeIn .15s ease;
+}
+
+@media (max-width: 600px) {
+    .llm-config-form .form-row {
+        grid-template-columns: 1fr;
+    }
+}

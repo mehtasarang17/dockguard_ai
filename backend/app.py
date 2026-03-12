@@ -13,13 +13,13 @@ from werkzeug.utils import secure_filename
 from config import Config
 from models import (
     init_db, get_central_db, Document, Analysis, ChatHistory,
-    SystemSettings, FrameworkStandard, BatchAnalysis, AuthorizedApp, Tenant,
+    SystemSettings, FrameworkStandard, BatchAnalysis, BatchDocument, AuthorizedApp, Tenant,
 )
 from tenant_db import get_tenant_session, create_tenant_database
 from extractor import extract_text
 from agents.orchestrator import Orchestrator
 from agents.bedrock_client import BedrockClient
-from agents.llm_factory import get_llm_client, get_active_provider, set_active_provider
+from agents.llm_factory import get_llm_client, get_active_provider, set_active_provider, clear_tenant_llm_cache
 from agents.prompts import knowledge_chat_prompt, standalone_question_prompt, framework_comparison_prompt, single_framework_llm_prompt
 from sqlalchemy import func
 import vector_store
@@ -186,8 +186,16 @@ def provision():
 
     Called by the SaaS backend when a new customer signs up.
     Creates the tenant, its first API key (with expiration), and a refresh token.
+
+    Optional LLM configuration can be provided:
+    - llm_aws_bearer_token: AWS Bedrock bearer token (will be encrypted)
+    - llm_aws_region: AWS region (default: us-east-1)
+    - llm_bedrock_model_id: Bedrock model ID (default: Config.BEDROCK_MODEL_ID)
+
+    If LLM fields are provided, credentials are validated before saving.
     """
     from datetime import timedelta
+    from crypto import encrypt_value
 
     # --- Payload ---
     data = request.get_json(force=True) or {}
@@ -196,6 +204,21 @@ def provision():
     expires_in_days = int(data.get('expires_in_days', 90))
     if not name or not slug:
         return jsonify({'error': 'name and slug are required'}), 400
+
+    # Optional LLM configuration
+    llm_bearer_token = data.get('llm_aws_bearer_token', '').strip()
+    llm_region = data.get('llm_aws_region', 'us-east-1').strip()
+    llm_model_id = data.get('llm_bedrock_model_id', Config.BEDROCK_MODEL_ID).strip()
+
+    # Validate LLM credentials if provided
+    llm_configured = False
+    if llm_bearer_token:
+        valid, error_msg = _validate_bedrock_credentials(llm_bearer_token, llm_region, llm_model_id)
+        if not valid:
+            return jsonify({
+                'error': 'Invalid LLM credentials',
+                'message': error_msg,
+            }), 400
 
     db = get_central_db()
     try:
@@ -211,6 +234,7 @@ def provision():
                 'refresh_token': existing_key.refresh_token if existing_key else None,
                 'expires_at': existing_key.expires_at.isoformat() if existing_key and existing_key.expires_at else None,
                 'is_expired': existing_key.is_expired if existing_key else False,
+                'llm_configured': existing.has_llm_config,
                 'created': False,
                 'message': f'Tenant "{slug}" already exists.',
             }), 200
@@ -223,6 +247,14 @@ def provision():
         # Create a dedicated database for this tenant
         tenant_db_name = create_tenant_database(slug)
         tenant.db_name = tenant_db_name
+
+        # Set LLM config if provided
+        if llm_bearer_token:
+            tenant.llm_aws_bearer_token = encrypt_value(llm_bearer_token)
+            tenant.llm_aws_region = llm_region
+            tenant.llm_bedrock_model_id = llm_model_id
+            tenant.llm_config_updated_at = datetime.utcnow()
+            llm_configured = True
 
         # Create first API key with expiration + refresh token
         first_key = f"sk-{uuid.uuid4()}"
@@ -247,6 +279,7 @@ def provision():
             'api_key': first_key,
             'refresh_token': refresh_tok,
             'expires_at': expires_at.isoformat(),
+            'llm_configured': llm_configured,
             'created': True,
             'message': f'Tenant "{name}" provisioned successfully.',
         }), 201
@@ -292,11 +325,18 @@ def provision_refresh_key():
         app_entry.last_used = None  # reset
         db.commit()
 
+        # Get tenant for LLM config status
+        tenant = db.query(Tenant).filter(Tenant.id == app_entry.tenant_id).first()
+
         return jsonify({
             'api_key': app_entry.api_key,
             'refresh_token': app_entry.refresh_token,
             'expires_at': app_entry.expires_at.isoformat(),
             'tenant_id': app_entry.tenant_id,
+            'llm_configured': tenant.has_llm_config if tenant else False,
+            'llm_aws_region': tenant.llm_aws_region if tenant else None,
+            'llm_bedrock_model_id': tenant.llm_bedrock_model_id if tenant else None,
+            'llm_config_updated_at': tenant.llm_config_updated_at.isoformat() if tenant and tenant.llm_config_updated_at else None,
             'message': f'API key rotated successfully. Old key ({old_key[:10]}...) is now invalid.',
         }), 200
     finally:
@@ -356,6 +396,7 @@ def verify_api_key_info():
             'tenant_id': app_entry.tenant_id,
             'expires_at': app_entry.expires_at.isoformat() if app_entry.expires_at else None,
             'is_admin': bool(app_entry.is_admin),
+            'llm_configured': tenant.has_llm_config if tenant else False,
         }), 200
     finally:
         db.close()
@@ -443,6 +484,128 @@ def ollama_pull():
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 
+# ---- Per-Tenant LLM Configuration -------------------------------------------
+import requests as http_requests
+from crypto import encrypt_value, decrypt_value
+
+
+def _validate_bedrock_credentials(bearer_token: str, region: str, model_id: str = None) -> tuple:
+    """Validate AWS Bedrock credentials by making a minimal API call.
+
+    Returns:
+        (success: bool, error_message: str or None)
+    """
+    if not bearer_token or not region:
+        return False, "Bearer token and region are required"
+
+    # Use default model if not specified
+    test_model = model_id or Config.BEDROCK_MODEL_ID
+
+    url = f"https://bedrock-runtime.{region}.amazonaws.com/model/{test_model}/converse"
+    headers = {
+        'Authorization': f'Bearer {bearer_token}',
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+    }
+    payload = {
+        "messages": [{"role": "user", "content": [{"text": "Hello"}]}],
+        "inferenceConfig": {"maxTokens": 10, "temperature": 0.1},
+    }
+
+    try:
+        resp = http_requests.post(url, headers=headers, json=payload, timeout=30)
+        if resp.ok:
+            return True, None
+        elif resp.status_code == 401 or resp.status_code == 403:
+            return False, "Invalid or expired bearer token"
+        elif resp.status_code == 404:
+            return False, f"Model '{test_model}' not found or not enabled in region '{region}'"
+        else:
+            error_detail = resp.text[:200] if resp.text else "Unknown error"
+            return False, f"Bedrock API error ({resp.status_code}): {error_detail}"
+    except http_requests.exceptions.Timeout:
+        return False, "Connection timeout - check region and network"
+    except http_requests.exceptions.ConnectionError:
+        return False, f"Cannot connect to Bedrock in region '{region}'"
+    except Exception as e:
+        return False, f"Validation failed: {str(e)}"
+
+
+@app.route('/api/tenant/llm-config', methods=['GET'])
+def get_tenant_llm_config():
+    """Get tenant LLM configuration status (NOT credentials).
+
+    Returns whether LLM config is set, the region, model, and last updated time.
+    Does NOT return the bearer token for security reasons.
+    """
+    db = get_central_db()
+    try:
+        tenant = db.query(Tenant).filter(Tenant.id == _tenant_id()).first()
+        if not tenant:
+            return jsonify({'error': 'Tenant not found'}), 404
+
+        return jsonify({
+            'has_config': tenant.has_llm_config,
+            'aws_region': tenant.llm_aws_region,
+            'bedrock_model_id': tenant.llm_bedrock_model_id,
+            'bearer_token_set': bool(tenant.llm_aws_bearer_token),
+            'updated_at': tenant.llm_config_updated_at.isoformat() if tenant.llm_config_updated_at else None,
+        })
+    finally:
+        db.close()
+
+
+@app.route('/api/tenant/llm-config', methods=['POST'])
+def set_tenant_llm_config():
+    """Set or update tenant LLM configuration.
+
+    Validates credentials before saving. Encrypts the bearer token at rest.
+    """
+    data = request.get_json(force=True) or {}
+
+    bearer_token = data.get('aws_bearer_token', '').strip()
+    aws_region = data.get('aws_region', 'us-east-1').strip()
+    model_id = data.get('bedrock_model_id', Config.BEDROCK_MODEL_ID).strip()
+
+    if not bearer_token:
+        return jsonify({'error': 'aws_bearer_token is required'}), 400
+    if not aws_region:
+        return jsonify({'error': 'aws_region is required'}), 400
+
+    # Validate credentials
+    valid, error_msg = _validate_bedrock_credentials(bearer_token, aws_region, model_id)
+    if not valid:
+        return jsonify({
+            'error': 'Invalid credentials',
+            'message': error_msg,
+        }), 400
+
+    # Save encrypted config
+    db = get_central_db()
+    try:
+        tenant = db.query(Tenant).filter(Tenant.id == _tenant_id()).first()
+        if not tenant:
+            return jsonify({'error': 'Tenant not found'}), 404
+
+        tenant.llm_aws_bearer_token = encrypt_value(bearer_token)
+        tenant.llm_aws_region = aws_region
+        tenant.llm_bedrock_model_id = model_id
+        tenant.llm_config_updated_at = datetime.utcnow()
+        db.commit()
+
+        # Clear cached LLM client for this tenant
+        clear_tenant_llm_cache(_tenant_id())
+
+        return jsonify({
+            'message': 'LLM configuration saved successfully',
+            'has_config': True,
+            'aws_region': aws_region,
+            'bedrock_model_id': model_id,
+        })
+    finally:
+        db.close()
+
+
 # ---- Upload & Analyse -------------------------------------------------------
 @app.route('/api/upload', methods=['POST'])
 def upload_document():
@@ -460,6 +623,12 @@ def upload_document():
                      'compliance', 'privacy', 'hr', 'it', 'other')
     if document_type not in allowed_types:
         document_type = 'policy'  # fallback to safe default
+
+    # Validate LLM credentials before accepting the file
+    try:
+        get_llm_client(tenant_id=_tenant_id())
+    except RuntimeError as e:
+        return jsonify({'error': 'LLM not configured', 'message': str(e)}), 402
 
     original = file.filename
     safe = secure_filename(original)
@@ -693,7 +862,10 @@ def check_frameworks(doc_id):
         text = doc.markdown_text or extract_text(doc.file_path)
         fw_uploaded = framework_store.get_uploaded_frameworks(_tenant_db_name(), _tenant_id())
 
-        llm = get_llm_client()
+        try:
+            llm = get_llm_client(tenant_id=_tenant_id())
+        except RuntimeError as e:
+            return jsonify({'error': 'LLM not configured', 'message': str(e)}), 402
         mappings = dict(doc.analysis.framework_mappings or {})
 
         for key in selected:
@@ -758,6 +930,12 @@ def upload_batch():
     if document_type not in allowed_types:
         document_type = 'policy'
 
+    # Validate LLM credentials before accepting any files
+    try:
+        get_llm_client(tenant_id=_tenant_id())
+    except RuntimeError as e:
+        return jsonify({'error': 'LLM not configured', 'message': str(e)}), 402
+
     db = _get_tenant_db()
     try:
         documents_info = []
@@ -797,11 +975,16 @@ def upload_batch():
         # Create batch analysis record
         batch = BatchAnalysis(
             tenant_id=_tenant_id(),
-            document_ids=[d['id'] for d in documents_info],
             document_type=document_type,
             status='processing',
         )
         db.add(batch)
+        db.flush()  # get batch.id before inserting pivot rows
+
+        # Insert pivot rows (one per document)
+        for d in documents_info:
+            db.add(BatchDocument(batch_id=batch.id, document_id=d['id']))
+
         db.commit()
         db.refresh(batch)
         batch_id = batch.id
@@ -833,10 +1016,15 @@ def get_batch_analysis(batch_id):
         if not batch:
             return jsonify({'error': 'Batch not found'}), 404
 
-        # Get individual document results
+        # Get individual document results — single IN query instead of N round-trips
+        doc_ids = batch.document_ids
+        docs_by_id = {
+            doc.id: doc
+            for doc in db.query(Document).filter(Document.id.in_(doc_ids)).all()
+        }
         individual = []
-        for doc_id in (batch.document_ids or []):
-            doc = db.query(Document).filter(Document.id == doc_id).first()
+        for doc_id in doc_ids:
+            doc = docs_by_id.get(doc_id)
             if doc:
                 doc_data = doc.to_dict()
                 if doc.analysis:
@@ -860,20 +1048,21 @@ def delete_batch_analysis(batch_id):
         if not batch:
             return jsonify({'error': 'Batch not found'}), 404
             
-        for doc_id in (batch.document_ids or []):
-            doc = db.query(Document).filter(Document.id == doc_id).first()
-            if doc:
+        doc_ids = batch.document_ids
+        docs = db.query(Document).filter(Document.id.in_(doc_ids)).all()
+        for doc in docs:
+            try:
+                vector_store.remove_document(_tenant_db_name(), _tenant_id(), doc.id)
+            except Exception:
+                pass
+            if os.path.exists(doc.file_path):
                 try:
-                    vector_store.remove_document(_tenant_db_name(), _tenant_id(), doc_id)
+                    os.remove(doc.file_path)
                 except Exception:
                     pass
-                if os.path.exists(doc.file_path):
-                    try:
-                        os.remove(doc.file_path)
-                    except:
-                        pass
-                db.delete(doc)
-                
+            db.delete(doc)
+
+        # BatchDocument pivot rows are cascade-deleted with the batch
         db.delete(batch)
         db.commit()
         return jsonify({'message': 'Batch deleted'})
@@ -898,9 +1087,9 @@ def save_batch_documents(batch_id):
 
         saved_docs = []
         total_chunks = 0
-        for doc_id in (batch.document_ids or []):
-            doc = db.query(Document).filter(Document.id == doc_id).first()
-            if not doc or doc.is_saved:
+        docs = db.query(Document).filter(Document.id.in_(batch.document_ids)).all()
+        for doc in docs:
+            if doc.is_saved:
                 continue
             try:
                 text = doc.markdown_text or extract_text(doc.file_path)
@@ -912,7 +1101,7 @@ def save_batch_documents(batch_id):
                 total_chunks += chunk_count
                 saved_docs.append(doc.original_filename)
             except Exception as e:
-                print(f"Error saving doc {doc_id} to KB: {e}")
+                print(f"Error saving doc {doc.id} to KB: {e}")
 
         db.commit()
         return jsonify({
@@ -1097,8 +1286,11 @@ def chat_fill_document():
         return jsonify({'error': f'Unsupported format for filling: {ext}. Supported: {", ".join(document_filler.SUPPORTED_FORMATS)}'}), 400
 
     try:
-        # Use the same LLM client as chat
-        fill_llm = get_llm_client()
+        # Use the same LLM client as chat (tenant-aware)
+        try:
+            fill_llm = get_llm_client(tenant_id=_tenant_id())
+        except RuntimeError as e:
+            return jsonify({'error': 'LLM not configured', 'message': str(e)}), 402
 
         result = document_filler.fill_document(file_path, filename, fill_llm, db_name=_tenant_db_name(), tenant_id=_tenant_id())
 
@@ -1173,7 +1365,10 @@ def chat():
         history_dicts = [h.to_dict() for h in history]
 
         # Initialize a new LLM client for this request to ensure token counts are thread-safe
-        chat_llm = get_llm_client()
+        try:
+            chat_llm = get_llm_client(tenant_id=_tenant_id())
+        except RuntimeError as e:
+            return jsonify({'error': 'LLM not configured', 'message': str(e)}), 402
 
         # Contextualize query
         search_query = message
