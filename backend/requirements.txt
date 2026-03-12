@@ -16,5 +16,7 @@ python-docx
 celery[redis]==5.4.0
 redis==5.2.1
 pgvector==0.3.6
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
 sentence-transformers==3.4.1
 cryptography>=42.0.0
