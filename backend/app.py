@@ -15,6 +15,7 @@ from models import (
     init_db, get_central_db, Document, Analysis, ChatHistory,
     SystemSettings, FrameworkStandard, BatchAnalysis, BatchDocument, AuthorizedApp, Tenant,
 )
+from crypto import hash_token
 from tenant_db import get_tenant_session, create_tenant_database
 from extractor import extract_text
 from agents.orchestrator import Orchestrator
@@ -58,6 +59,7 @@ def init_default_app():
 
             # Enforce the Admin API Key from the environment
             expected_admin_key = Config.ADMIN_API_KEY
+            expected_admin_hash = hash_token(expected_admin_key)
             
             # Find the existing default admin app (if any)
             admin_app = db.query(AuthorizedApp).filter_by(
@@ -69,15 +71,17 @@ def init_default_app():
                 app_entry = AuthorizedApp(
                     tenant_id=tenant.id,
                     name='Default Admin',
-                    api_key=expected_admin_key,
+                    api_key_hash=expected_admin_hash,
+                    api_key_prefix=expected_admin_key[:10],
                     is_active=True,
                     is_admin=True,
                 )
                 db.add(app_entry)
                 print(f"🔑 Created default admin app with key from .env")
             else:
-                if admin_app.api_key != expected_admin_key:
-                    admin_app.api_key = expected_admin_key
+                if admin_app.api_key_hash != expected_admin_hash:
+                    admin_app.api_key_hash = expected_admin_hash
+                    admin_app.api_key_prefix = expected_admin_key[:10]
                     admin_app.is_active = True
                     admin_app.is_admin = True
                     print(f"🔄 Rotated default admin key to match .env Configuration")
@@ -230,13 +234,12 @@ def provision():
             ).first()
             return jsonify({
                 'tenant': existing.to_dict(),
-                'api_key': existing_key.api_key if existing_key else None,
-                'refresh_token': existing_key.refresh_token if existing_key else None,
+                'api_key_prefix': existing_key.api_key_prefix if existing_key else None,
                 'expires_at': existing_key.expires_at.isoformat() if existing_key and existing_key.expires_at else None,
                 'is_expired': existing_key.is_expired if existing_key else False,
                 'llm_configured': existing.has_llm_config,
                 'created': False,
-                'message': f'Tenant "{slug}" already exists.',
+                'message': f'Tenant "{slug}" already exists. API key was shown only at creation time.',
             }), 200
 
         # Create tenant
@@ -264,11 +267,12 @@ def provision():
         app_entry = AuthorizedApp(
             tenant_id=tenant.id,
             name=f"{name} — Default Key",
-            api_key=first_key,
+            api_key_hash=hash_token(first_key),
+            api_key_prefix=first_key[:10],
+            refresh_token_hash=hash_token(refresh_tok),
             is_active=True,
             is_admin=False,
             expires_at=expires_at,
-            refresh_token=refresh_tok,
         )
         db.add(app_entry)
         db.commit()
@@ -305,7 +309,7 @@ def provision_refresh_key():
 
     db = get_central_db()
     try:
-        app_entry = db.query(AuthorizedApp).filter_by(refresh_token=refresh_token).first()
+        app_entry = db.query(AuthorizedApp).filter_by(refresh_token_hash=hash_token(refresh_token)).first()
         if not app_entry:
             return jsonify({
                 'error': 'Invalid refresh token',
@@ -318,9 +322,12 @@ def provision_refresh_key():
             }), 403
 
         # Rotate: new API key + new refresh token + reset expiry
-        old_key = app_entry.api_key
-        app_entry.api_key = f"sk-{uuid.uuid4()}"
-        app_entry.refresh_token = f"rt-{uuid.uuid4()}"
+        old_prefix = app_entry.api_key_prefix or 'sk-??????'
+        new_api_key = f"sk-{uuid.uuid4()}"
+        new_refresh_tok = f"rt-{uuid.uuid4()}"
+        app_entry.api_key_hash = hash_token(new_api_key)
+        app_entry.api_key_prefix = new_api_key[:10]
+        app_entry.refresh_token_hash = hash_token(new_refresh_tok)
         app_entry.expires_at = datetime.utcnow() + timedelta(days=new_expires_in_days)
         app_entry.last_used = None  # reset
         db.commit()
@@ -329,15 +336,15 @@ def provision_refresh_key():
         tenant = db.query(Tenant).filter(Tenant.id == app_entry.tenant_id).first()
 
         return jsonify({
-            'api_key': app_entry.api_key,
-            'refresh_token': app_entry.refresh_token,
+            'api_key': new_api_key,
+            'refresh_token': new_refresh_tok,
             'expires_at': app_entry.expires_at.isoformat(),
             'tenant_id': app_entry.tenant_id,
             'llm_configured': tenant.has_llm_config if tenant else False,
             'llm_aws_region': tenant.llm_aws_region if tenant else None,
             'llm_bedrock_model_id': tenant.llm_bedrock_model_id if tenant else None,
             'llm_config_updated_at': tenant.llm_config_updated_at.isoformat() if tenant and tenant.llm_config_updated_at else None,
-            'message': f'API key rotated successfully. Old key ({old_key[:10]}...) is now invalid.',
+            'message': f'API key rotated successfully. Old key ({old_prefix}...) is now invalid.',
         }), 200
     finally:
         db.close()
@@ -358,7 +365,7 @@ def verify_api_key_info():
 
     db = get_central_db()
     try:
-        app_entry = db.query(AuthorizedApp).filter_by(api_key=api_key).first()
+        app_entry = db.query(AuthorizedApp).filter_by(api_key_hash=hash_token(api_key)).first()
         if not app_entry:
             return jsonify({
                 'valid': False,
@@ -1979,7 +1986,8 @@ def admin_create_tenant():
         app_entry = AuthorizedApp(
             tenant_id=tenant.id,
             name=f"{name} — Default Key",
-            api_key=first_key,
+            api_key_hash=hash_token(first_key),
+            api_key_prefix=first_key[:10],
             is_active=True,
             is_admin=False,
         )
@@ -2050,14 +2058,18 @@ def admin_create_tenant_key(tenant_id):
         app_entry = AuthorizedApp(
             tenant_id=tenant_id,
             name=name,
-            api_key=new_key,
+            api_key_hash=hash_token(new_key),
+            api_key_prefix=new_key[:10],
             is_active=True,
             is_admin=is_admin_key,
         )
         db.add(app_entry)
         db.commit()
         db.refresh(app_entry)
-        return jsonify(app_entry.to_dict()), 201
+        # Return the full key ONCE in the creation response
+        result = app_entry.to_dict()
+        result['api_key'] = new_key
+        return jsonify(result), 201
     finally:
         db.close()
 

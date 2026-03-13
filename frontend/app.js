@@ -3057,14 +3057,12 @@ async function loadTenantKeys(tenantId) {
         }
 
         listEl.innerHTML = keys.map(k => {
-            const masked = k.api_key.substring(0, 8) + '••••••••••••';
+            const display = (k.api_key_prefix || 'sk-??????') + '••••••••••••';
             const statusColor = k.is_active ? '#10b981' : '#ef4444';
             const adminBadge = k.is_admin ? ' <span style="font-size:.6rem;background:rgba(139,92,246,.2);color:#a78bfa;padding:1px 5px;border-radius:6px;">admin</span>' : '';
             return `<div class="tenant-key-row">
                 <span class="tenant-key-name" title="${escHtml(k.name)}">${escHtml(k.name)}${adminBadge}</span>
-                <code class="tenant-key-code" id="tkv-${k.id}">${masked}</code>
-                <button class="btn-icon-xs" title="Reveal / Hide" onclick="toggleTenantKeyReveal(${k.id}, '${k.api_key}')"><i class="fas fa-eye" id="tke-${k.id}"></i></button>
-                <button class="btn-icon-xs" title="Copy key" onclick="copyText('${k.api_key}')"><i class="fas fa-copy"></i></button>
+                <code class="tenant-key-code" id="tkv-${k.id}">${display}</code>
                 <i class="fas fa-circle" style="font-size:.45rem;color:${statusColor};flex-shrink:0;" title="${k.is_active ? 'Active' : 'Inactive'}"></i>
                 <button class="btn-icon-xs danger" title="Revoke key" onclick="revokeTenantKey(${tenantId}, ${k.id}, '${escHtml(k.name)}')"><i class="fas fa-trash-alt"></i></button>
             </div>`;
@@ -3163,17 +3161,41 @@ async function createTenantKey(tenantId) {
         const data = await res.json();
         if (!res.ok) { alert(data.error || 'Failed to create key'); return; }
         if (input) input.value = '';
-        // Auto-reveal the new key briefly
-        await loadTenantKeys(tenantId);
-        // Highlight newly created key value
+
+        // Show the one-time key in a banner
         const newKey = data.api_key;
         if (newKey) {
-            // Find the row for this key and reveal it
-            setTimeout(() => toggleTenantKeyReveal(data.id, newKey), 150);
+            _showOneTimeKeyBanner(tenantId, newKey);
         }
+
+        await loadTenantKeys(tenantId);
     } catch (e) {
         alert('Error: ' + e.message);
     }
+}
+
+function _showOneTimeKeyBanner(tenantId, fullKey) {
+    const panel = document.getElementById(`tenant-keys-${tenantId}`);
+    if (!panel) return;
+    // Remove any existing banner
+    const old = panel.querySelector('.one-time-key-banner');
+    if (old) old.remove();
+
+    const banner = document.createElement('div');
+    banner.className = 'one-time-key-banner';
+    banner.style.cssText = 'background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.3);border-radius:8px;padding:.6rem .8rem;margin:.5rem 0;font-size:.8rem;';
+    banner.innerHTML = `
+        <div style="display:flex;align-items:center;gap:.4rem;margin-bottom:.3rem;color:var(--accent-success);font-weight:600;">
+            <i class="fas fa-exclamation-triangle"></i> Copy this key now — it won't be shown again!
+        </div>
+        <div style="display:flex;align-items:center;gap:.4rem;">
+            <code style="flex:1;word-break:break-all;font-size:.78rem;padding:.3rem .5rem;background:rgba(0,0,0,.2);border-radius:4px;">${fullKey}</code>
+            <button class="btn-icon-xs" title="Copy key" onclick="copyText('${fullKey}')"><i class="fas fa-copy"></i></button>
+        </div>
+    `;
+    panel.insertBefore(banner, panel.firstChild);
+    // Auto-remove after 60 seconds
+    setTimeout(() => { if (banner.parentElement) banner.remove(); }, 60000);
 }
 
 async function revokeTenantKey(tenantId, keyId, keyName) {

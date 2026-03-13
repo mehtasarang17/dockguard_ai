@@ -72,13 +72,17 @@ class AuthorizedApp(CentralBase):
     id = Column(Integer, primary_key=True)
     tenant_id = Column(Integer, ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False, default=1)
     name = Column(String(100), nullable=False)
-    api_key = Column(String(100), unique=True, nullable=False)
+
+    # --- Hashed credentials ---
+    api_key_hash = Column(String(64), unique=True, nullable=True)      # SHA-256 hex digest
+    api_key_prefix = Column(String(12), nullable=True)                 # e.g. "sk-550e84" for display
+    refresh_token_hash = Column(String(64), unique=True, nullable=True) # SHA-256 hex digest
+
     is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)  # admin keys can manage tenants
     created_at = Column(DateTime, default=datetime.utcnow)
     last_used = Column(DateTime, nullable=True)
     expires_at = Column(DateTime, nullable=True)       # NULL = never expires
-    refresh_token = Column(String(100), unique=True, nullable=True)  # for key rotation
 
     # Relationship
     tenant = relationship("Tenant", back_populates="authorized_apps")
@@ -92,7 +96,7 @@ class AuthorizedApp(CentralBase):
             'id': self.id,
             'tenant_id': self.tenant_id,
             'name': self.name,
-            'api_key': self.api_key,
+            'api_key_prefix': self.api_key_prefix,
             'is_active': self.is_active,
             'is_admin': self.is_admin,
             'created_at': self.created_at.isoformat() if self.created_at else None,
@@ -483,6 +487,12 @@ def init_db():
         # API key expiration & refresh tokens
         'ALTER TABLE authorized_apps ADD COLUMN expires_at TIMESTAMP',
         'ALTER TABLE authorized_apps ADD COLUMN refresh_token VARCHAR(100) UNIQUE',
+        # Hash-only API key storage
+        'ALTER TABLE authorized_apps ADD COLUMN api_key_hash VARCHAR(64) UNIQUE',
+        'ALTER TABLE authorized_apps ADD COLUMN api_key_prefix VARCHAR(12)',
+        'ALTER TABLE authorized_apps ADD COLUMN refresh_token_hash VARCHAR(64) UNIQUE',
+        # Make legacy plaintext columns nullable (for transition)
+        'ALTER TABLE authorized_apps ALTER COLUMN api_key DROP NOT NULL',
         # Markdown text cache
         'ALTER TABLE documents ADD COLUMN markdown_text TEXT',
         # Older app migrations
@@ -510,6 +520,12 @@ def init_db():
 
     # Batch documents pivot table + data migration (central DB / default tenant)
     _run_batch_pivot_migrations(engine)
+
+    # Backfill hashed API keys from existing plaintext values
+    _backfill_api_key_hashes(engine)
+
+    # Drop legacy plaintext columns (safe — backfill already ran)
+    _drop_legacy_plaintext_columns(engine)
 
 
 def _run_batch_pivot_migrations(engine):
@@ -550,6 +566,60 @@ def _run_batch_pivot_migrations(engine):
                 conn.commit()
             except Exception:
                 conn.rollback()
+
+
+def _backfill_api_key_hashes(engine):
+    """Backfill api_key_hash, api_key_prefix, and refresh_token_hash from existing plaintext values.
+
+    Safe to run multiple times — only updates rows that have plaintext but no hash.
+    Uses Python-side hashing (SHA-256) since PostgreSQL doesn't have a built-in SHA-256 text function.
+    """
+    import hashlib
+
+    with engine.connect() as conn:
+        try:
+            rows = conn.execute(text(
+                "SELECT id, api_key, refresh_token FROM authorized_apps "
+                "WHERE api_key IS NOT NULL AND api_key_hash IS NULL"
+            )).fetchall()
+
+            for row in rows:
+                row_id, api_key, refresh_token = row[0], row[1], row[2]
+                api_key_hash = hashlib.sha256(api_key.encode()).hexdigest() if api_key else None
+                api_key_prefix = api_key[:10] if api_key else None
+                refresh_token_hash = hashlib.sha256(refresh_token.encode()).hexdigest() if refresh_token else None
+
+                conn.execute(text(
+                    "UPDATE authorized_apps SET api_key_hash = :akh, api_key_prefix = :akp, "
+                    "refresh_token_hash = :rth WHERE id = :id"
+                ), {'akh': api_key_hash, 'akp': api_key_prefix, 'rth': refresh_token_hash, 'id': row_id})
+
+            conn.commit()
+            if rows:
+                print(f"🔒 Backfilled hashes for {len(rows)} existing API key(s)")
+        except Exception as e:
+            conn.rollback()
+            print(f"⚠️  API key hash backfill: {e}")
+
+
+def _drop_legacy_plaintext_columns(engine):
+    """Drop the legacy plaintext api_key and refresh_token columns.
+
+    Safe to run multiple times — DROP IF EXISTS is idempotent.
+    Must only run AFTER _backfill_api_key_hashes() has completed.
+    """
+    drop_stmts = [
+        'ALTER TABLE authorized_apps DROP COLUMN IF EXISTS api_key',
+        'ALTER TABLE authorized_apps DROP COLUMN IF EXISTS refresh_token',
+    ]
+    with engine.connect() as conn:
+        for stmt in drop_stmts:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+    print("🗑️  Dropped legacy plaintext api_key / refresh_token columns")
 
 
 def get_central_db():

@@ -9,6 +9,7 @@ from datetime import datetime
 from flask import request, jsonify, g
 from config import Config
 from models import AuthorizedApp, Tenant, get_central_db
+from crypto import hash_token
 
 
 # Routes that do NOT require any authentication
@@ -69,7 +70,7 @@ def register_middleware(app):
         if api_key:
             db = get_central_db()
             try:
-                app_entry = db.query(AuthorizedApp).filter_by(api_key=api_key).first()
+                app_entry = db.query(AuthorizedApp).filter_by(api_key_hash=hash_token(api_key)).first()
                 if not app_entry:
                     return jsonify({'error': 'Invalid API key', 'message': 'API key not recognised.'}), 401
                 if not app_entry.is_active:

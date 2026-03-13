@@ -38,6 +38,17 @@ def encrypt_value(plaintext: str) -> Optional[str]:
     return ciphertext.decode()
 
 
+def hash_token(value: str) -> str:
+    """Return the SHA-256 hex digest of a token (API key or refresh token).
+
+    Used for storage and lookup — deterministic so the same input always
+    produces the same hash, enabling direct DB queries.
+    """
+    if not value:
+        return ''
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
 def decrypt_value(ciphertext: str) -> Optional[str]:
     """Decrypt a ciphertext value.
 
