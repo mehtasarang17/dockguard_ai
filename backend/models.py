@@ -77,6 +77,7 @@ class AuthorizedApp(CentralBase):
     api_key_hash = Column(String(64), unique=True, nullable=True)      # SHA-256 hex digest
     api_key_prefix = Column(String(12), nullable=True)                 # e.g. "sk-550e84" for display
     refresh_token_hash = Column(String(64), unique=True, nullable=True) # SHA-256 hex digest
+    refresh_token_expires_at = Column(DateTime, nullable=True)           # NULL = no active refresh token
 
     is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)  # admin keys can manage tenants
@@ -507,6 +508,8 @@ def init_db():
         'ALTER TABLE tenants ADD COLUMN llm_aws_region VARCHAR(50)',
         'ALTER TABLE tenants ADD COLUMN llm_bedrock_model_id VARCHAR(100)',
         'ALTER TABLE tenants ADD COLUMN llm_config_updated_at TIMESTAMP',
+        # Refresh token expiration (short-lived refresh tokens)
+        'ALTER TABLE authorized_apps ADD COLUMN refresh_token_expires_at TIMESTAMP',
         # Pivot table migration: make old JSON column nullable before dropping mapping
         'ALTER TABLE batch_analyses ALTER COLUMN document_ids DROP NOT NULL',
     ]

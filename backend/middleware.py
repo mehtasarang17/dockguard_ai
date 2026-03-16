@@ -13,7 +13,7 @@ from crypto import hash_token
 
 
 # Routes that do NOT require any authentication
-AUTH_EXEMPT_ROUTES = {'health', 'provision', 'provision_refresh_key', 'verify_api_key_info'}
+AUTH_EXEMPT_ROUTES = {'health', 'provision', 'get_refresh_token', 'provision_refresh_key', 'verify_api_key_info'}
 
 # Swagger resources are public (no key needed to view docs)
 SWAGGER_PREFIXES = ('/apispec.json',)

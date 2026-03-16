@@ -178,15 +178,10 @@ def get_llm_client(tenant_id: int = None):
 
     if config and config.get('bearer_token'):
         pass  # fall through to create tenant-specific client below
-    elif config and config.get('is_default'):
-        # Default tenant: permitted to use global credentials
-        return _get_global_client()
     else:
-        # Provisioned tenant with no LLM credentials — do not leak global creds
-        raise RuntimeError(
-            f"No LLM credentials configured for tenant {tenant_id}. "
-            "Please set AWS Bedrock credentials via the provisioning API or admin settings."
-        )
+        # No tenant-specific credentials — fall back to global LLM config
+        print(f"ℹ️  Tenant {tenant_id} has no LLM credentials configured, falling back to global LLM client")
+        return _get_global_client()
 
     # Create tenant-specific client
     client = BedrockClient(

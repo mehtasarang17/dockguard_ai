@@ -221,10 +221,14 @@ paths:
       summary: Auto-provision a new tenant
       description: |
         Called by your SaaS backend when a new customer signs up.
-        Creates the tenant, its first API key (with expiration), and a refresh token.
+        Creates the tenant and its first API key (with expiration).
 
         **No Bearer auth needed** — this is a public provisioning endpoint.
         **Idempotent:** If the slug already exists, returns the existing tenant (200).
+
+        When the API key expires, the tenant should call `POST /api/get-refresh-token`
+        with the expired key to obtain a short-lived refresh token (10 min),
+        then use that at `POST /api/refresh-key` to get a new API key.
 
         **Optional LLM Configuration:** You can pass `llm_aws_bearer_token`, `llm_aws_region`,
         and `llm_bedrock_model_id` to pre-configure the tenant's LLM credentials during provisioning.
@@ -270,9 +274,6 @@ paths:
               api_key:
                 type: string
                 example: sk-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-              refresh_token:
-                type: string
-                example: rt-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
               expires_at:
                 type: string
                 format: date-time
@@ -291,9 +292,7 @@ paths:
             properties:
               tenant:
                 $ref: '#/definitions/TenantSummary'
-              api_key:
-                type: string
-              refresh_token:
+              api_key_prefix:
                 type: string
               expires_at:
                 type: string
@@ -310,18 +309,64 @@ paths:
         400:
           description: Missing name or slug, or invalid LLM credentials
 
+  /get-refresh-token:
+    post:
+      tags: [Provisioning]
+      summary: Get a refresh token for an expired API key
+      description: |
+        Issue a short-lived refresh token (10 minutes) for an expired API key.
+        The caller presents their expired API key. If valid but expired,
+        a new refresh token is generated.
+
+        Use the returned refresh token at `POST /api/refresh-key` to obtain a new API key.
+
+        **No Bearer auth needed** — the expired API key is passed in the request body.
+      security: []
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            required: [api_key]
+            properties:
+              api_key:
+                type: string
+                example: sk-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+                description: The expired API key
+      responses:
+        200:
+          description: Refresh token issued
+          schema:
+            type: object
+            properties:
+              refresh_token:
+                type: string
+                example: rt-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+              refresh_token_expires_at:
+                type: string
+                format: date-time
+                description: Refresh token expires after 10 minutes
+              message:
+                type: string
+        400:
+          description: Missing api_key or key not expired
+        401:
+          description: Invalid API key
+        403:
+          description: Application disabled
+
   /refresh-key:
     post:
       tags: [Provisioning]
       summary: Rotate an API key using a refresh token
       description: |
-        Generates a new API key, a new refresh token (one-time use), and
-        resets the expiration. The old key and refresh token are invalidated.
+        Generates a new API key and resets the expiration.
+        The refresh token is single-use and invalidated after use.
+
+        **Flow:** expired API key → `POST /get-refresh-token` → refresh token → `POST /refresh-key` → new API key.
 
         **No Bearer auth needed** — uses the refresh token for authentication.
-
-        Also returns LLM configuration status so the client can prompt for
-        credential updates if needed.
       security: []
       parameters:
         - in: body
@@ -347,9 +392,6 @@ paths:
               api_key:
                 type: string
                 example: sk-new-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-              refresh_token:
-                type: string
-                example: rt-new-xxxx-xxxx-xxxx-xxxxxxxxxxxx
               expires_at:
                 type: string
                 format: date-time
@@ -358,22 +400,12 @@ paths:
               llm_configured:
                 type: boolean
                 description: Whether the tenant has LLM credentials configured
-              llm_aws_region:
-                type: string
-                description: Current LLM region (if configured)
-              llm_bedrock_model_id:
-                type: string
-                description: Current Bedrock model ID (if configured)
-              llm_config_updated_at:
-                type: string
-                format: date-time
-                description: When LLM config was last updated
               message:
                 type: string
         400:
           description: Missing refresh_token
         401:
-          description: Invalid or already-used refresh token
+          description: Invalid, already-used, or expired refresh token
         403:
           description: Application disabled
 

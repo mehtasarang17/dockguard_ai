@@ -281,22 +281,72 @@ def provision():
         return jsonify({
             'tenant': tenant.to_dict(),
             'api_key': first_key,
-            'refresh_token': refresh_tok,
             'expires_at': expires_at.isoformat(),
             'llm_configured': llm_configured,
             'created': True,
-            'message': f'Tenant "{name}" provisioned successfully.',
+            'message': f'Tenant "{name}" provisioned successfully. When your API key expires, call POST /api/get-refresh-token with the expired key to obtain a short-lived refresh token.',
         }), 201
+    finally:
+        db.close()
+
+
+@app.route('/api/get-refresh-token', methods=['POST'])
+def get_refresh_token():
+    """Issue a short-lived refresh token for an expired API key.
+
+    The caller presents their expired API key. If valid (but expired),
+    a new refresh token is generated with a 10-minute lifespan.
+    The refresh token can then be used at POST /api/refresh-key to
+    obtain a new API key.
+    """
+    from datetime import timedelta
+
+    data = request.get_json(force=True) or {}
+    api_key = data.get('api_key', '').strip()
+
+    if not api_key:
+        return jsonify({'error': 'api_key is required'}), 400
+
+    db = get_central_db()
+    try:
+        app_entry = db.query(AuthorizedApp).filter_by(api_key_hash=hash_token(api_key)).first()
+        if not app_entry:
+            return jsonify({
+                'error': 'Invalid API key',
+                'message': 'API key not recognised.',
+            }), 401
+        if not app_entry.is_active:
+            return jsonify({
+                'error': 'Application disabled',
+                'message': 'This application has been disabled by an administrator.',
+            }), 403
+        if not app_entry.is_expired:
+            return jsonify({
+                'error': 'API key not expired',
+                'message': 'Your API key is still valid. Refresh tokens are only issued for expired keys.',
+            }), 400
+
+        # Generate a short-lived refresh token (10 minutes)
+        refresh_tok = f"rt-{uuid.uuid4()}"
+        app_entry.refresh_token_hash = hash_token(refresh_tok)
+        app_entry.refresh_token_expires_at = datetime.utcnow() + timedelta(minutes=10)
+        db.commit()
+
+        return jsonify({
+            'refresh_token': refresh_tok,
+            'refresh_token_expires_at': app_entry.refresh_token_expires_at.isoformat(),
+            'message': 'Refresh token issued. Use it at POST /api/refresh-key within 10 minutes to obtain a new API key.',
+        }), 200
     finally:
         db.close()
 
 
 @app.route('/api/refresh-key', methods=['POST'])
 def provision_refresh_key():
-    """Rotate an expired (or active) API key using a refresh token.
+    """Rotate an expired API key using a refresh token.
 
-    Generates a new API key, a new refresh token (one-time use), and
-    resets the expiration. The old key and refresh token are invalidated.
+    Generates a new API key and resets the expiration.
+    The refresh token is single-use and invalidated after use.
     """
     from datetime import timedelta
 
@@ -321,13 +371,24 @@ def provision_refresh_key():
                 'message': 'This application has been disabled by an administrator.',
             }), 403
 
-        # Rotate: new API key + new refresh token + reset expiry
+        # Check refresh token expiration
+        if app_entry.refresh_token_expires_at and app_entry.refresh_token_expires_at < datetime.utcnow():
+            # Invalidate the expired refresh token
+            app_entry.refresh_token_hash = None
+            app_entry.refresh_token_expires_at = None
+            db.commit()
+            return jsonify({
+                'error': 'Refresh token expired',
+                'message': 'This refresh token has expired. Request a new one at POST /api/get-refresh-token with your expired API key.',
+            }), 401
+
+        # Rotate: new API key + invalidate refresh token + reset expiry
         old_prefix = app_entry.api_key_prefix or 'sk-??????'
         new_api_key = f"sk-{uuid.uuid4()}"
-        new_refresh_tok = f"rt-{uuid.uuid4()}"
         app_entry.api_key_hash = hash_token(new_api_key)
         app_entry.api_key_prefix = new_api_key[:10]
-        app_entry.refresh_token_hash = hash_token(new_refresh_tok)
+        app_entry.refresh_token_hash = None  # invalidate — single use
+        app_entry.refresh_token_expires_at = None
         app_entry.expires_at = datetime.utcnow() + timedelta(days=new_expires_in_days)
         app_entry.last_used = None  # reset
         db.commit()
@@ -337,13 +398,9 @@ def provision_refresh_key():
 
         return jsonify({
             'api_key': new_api_key,
-            'refresh_token': new_refresh_tok,
             'expires_at': app_entry.expires_at.isoformat(),
             'tenant_id': app_entry.tenant_id,
             'llm_configured': tenant.has_llm_config if tenant else False,
-            'llm_aws_region': tenant.llm_aws_region if tenant else None,
-            'llm_bedrock_model_id': tenant.llm_bedrock_model_id if tenant else None,
-            'llm_config_updated_at': tenant.llm_config_updated_at.isoformat() if tenant and tenant.llm_config_updated_at else None,
             'message': f'API key rotated successfully. Old key ({old_prefix}...) is now invalid.',
         }), 200
     finally:
