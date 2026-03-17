@@ -112,6 +112,29 @@ paths:
           $ref: '#/responses/Forbidden'
 
   /admin/tenants/{tenantId}:
+    delete:
+      tags: [Admin]
+      summary: Delete tenant by ID
+      description: "Requires `is_admin` flag on the API key. Permanently deletes the tenant and all its authorized apps."
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          type: integer
+      responses:
+        200:
+          description: Tenant deleted
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+              id:
+                type: integer
+        403:
+          $ref: '#/responses/Forbidden'
+        404:
+          $ref: '#/responses/NotFound'
     patch:
       tags: [Admin]
       summary: Update tenant

@@ -233,14 +233,14 @@ def provision():
                 tenant_id=existing.id, is_active=True
             ).first()
             return jsonify({
+                'error': 'Tenant already exists',
+                'message': f'Tenant {slug} already exists. API key was shown only at creation time.',
                 'tenant': existing.to_dict(),
                 'api_key_prefix': existing_key.api_key_prefix if existing_key else None,
                 'expires_at': existing_key.expires_at.isoformat() if existing_key and existing_key.expires_at else None,
                 'is_expired': existing_key.is_expired if existing_key else False,
                 'llm_configured': existing.has_llm_config,
-                'created': False,
-                'message': f'Tenant "{slug}" already exists. API key was shown only at creation time.',
-            }), 200
+            }), 409
 
         # Create tenant
         tenant = Tenant(name=name, slug=slug, is_active=True)
@@ -284,7 +284,7 @@ def provision():
             'expires_at': expires_at.isoformat(),
             'llm_configured': llm_configured,
             'created': True,
-            'message': f'Tenant "{name}" provisioned successfully. When your API key expires, call POST /api/get-refresh-token with the expired key to obtain a short-lived refresh token.',
+            'message': f'Tenant {name} provisioned successfully. When your API key expires, call POST /api/get-refresh-token with the expired key to obtain a short-lived refresh token.',
         }), 201
     finally:
         db.close()
@@ -2078,6 +2078,25 @@ def admin_update_tenant(tenant_id):
             tenant.name = data['name'].strip()
         db.commit()
         return jsonify(tenant.to_dict())
+    finally:
+        db.close()
+
+
+@app.route('/api/admin/tenants/<int:tenant_id>', methods=['DELETE'])
+def admin_delete_tenant(tenant_id):
+    """[Admin] Delete a tenant and all its authorized apps."""
+    err = _require_admin()
+    if err:
+        return err
+    db = get_central_db()
+    try:
+        tenant = db.query(Tenant).filter_by(id=tenant_id).first()
+        if not tenant:
+            return jsonify({'error': 'Tenant not found'}), 404
+        tenant_name = tenant.name
+        db.delete(tenant)
+        db.commit()
+        return jsonify({'message': f'Tenant {tenant_name} deleted successfully', 'id': tenant_id})
     finally:
         db.close()
 
