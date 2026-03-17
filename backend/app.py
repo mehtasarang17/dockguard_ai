@@ -613,7 +613,7 @@ def get_tenant_llm_config():
             'aws_region': tenant.llm_aws_region,
             'bedrock_model_id': tenant.llm_bedrock_model_id,
             'bearer_token_set': bool(tenant.llm_aws_bearer_token),
-            'llm_key': decrypt_value(tenant.llm_aws_bearer_token) if tenant.llm_aws_bearer_token else None,
+            'aws_bearer_token': decrypt_value(tenant.llm_aws_bearer_token) if tenant.llm_aws_bearer_token else None,
             'updated_at': tenant.llm_config_updated_at.isoformat() if tenant.llm_config_updated_at else None,
         })
     finally:
