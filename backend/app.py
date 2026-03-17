@@ -192,9 +192,9 @@ def provision():
     Creates the tenant, its first API key (with expiration), and a refresh token.
 
     Optional LLM configuration can be provided:
-    - llm_aws_bearer_token: AWS Bedrock bearer token (will be encrypted)
-    - llm_aws_region: AWS region (default: us-east-1)
-    - llm_bedrock_model_id: Bedrock model ID (default: Config.BEDROCK_MODEL_ID)
+    - aws_bearer_token: AWS Bedrock bearer token (will be encrypted)
+    - aws_region: AWS region (default: us-east-1)
+    - bedrock_model_id: Bedrock model ID (default: Config.BEDROCK_MODEL_ID)
 
     If LLM fields are provided, credentials are validated before saving.
     """
@@ -210,9 +210,9 @@ def provision():
         return jsonify({'error': 'name and slug are required'}), 400
 
     # Optional LLM configuration
-    llm_bearer_token = data.get('llm_aws_bearer_token', '').strip()
-    llm_region = data.get('llm_aws_region', 'us-east-1').strip()
-    llm_model_id = data.get('llm_bedrock_model_id', Config.BEDROCK_MODEL_ID).strip()
+    llm_bearer_token = data.get('aws_bearer_token', '').strip()
+    llm_region = data.get('aws_region', 'us-east-1').strip()
+    llm_model_id = data.get('bedrock_model_id', Config.BEDROCK_MODEL_ID).strip()
 
     # Validate LLM credentials if provided
     llm_configured = False

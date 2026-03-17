@@ -230,8 +230,8 @@ paths:
         with the expired key to obtain a short-lived refresh token (10 min),
         then use that at `POST /api/refresh-key` to get a new API key.
 
-        **Optional LLM Configuration:** You can pass `llm_aws_bearer_token`, `llm_aws_region`,
-        and `llm_bedrock_model_id` to pre-configure the tenant's LLM credentials during provisioning.
+        **Optional LLM Configuration:** You can pass `aws_bearer_token`, `aws_region`,
+        and `bedrock_model_id` to pre-configure the tenant's LLM credentials during provisioning.
         Credentials are validated before saving.
       security: []
       parameters:
@@ -253,14 +253,14 @@ paths:
                 type: integer
                 default: 90
                 description: API key validity in days (default 90)
-              llm_aws_bearer_token:
+              aws_bearer_token:
                 type: string
                 description: AWS Bedrock bearer token (optional, encrypted at rest)
-              llm_aws_region:
+              aws_region:
                 type: string
                 default: us-east-1
                 description: AWS region for Bedrock (e.g., us-east-1, us-west-2)
-              llm_bedrock_model_id:
+              bedrock_model_id:
                 type: string
                 description: Bedrock model ID (default from server config)
       responses:
